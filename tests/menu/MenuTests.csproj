@@ -1,0 +1,9 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net6.0</TargetFramework><ImplicitUsings>enable</ImplicitUsings><Nullable>enable</Nullable><LangVersion>12</LangVersion><NoWarn>NETSDK1138</NoWarn></PropertyGroup>
+  <ItemGroup>
+    <Compile Include="../../src/UI/MenuLayer.cs" Link="MenuLayer.cs" />
+    <Compile Include="../../src/UI/PendingMenuOpen.cs" Link="PendingMenuOpen.cs" />
+    <Compile Include="../../src/Input/MenuOpenPolicy.cs" Link="MenuOpenPolicy.cs" />
+    <Reference Include="MonoGame.Framework"><HintPath>$(GamePath)/MonoGame.Framework.dll</HintPath></Reference>
+  </ItemGroup>
+</Project>

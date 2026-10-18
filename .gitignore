@@ -1,0 +1,39 @@
+**/bin/
+**/obj/
+dist/
+.build/
+.DS_Store
+config.json
+secrets.json
+data/
+
+.credential-key
+
+# Private runtime data, reports and local build dependencies.
+.env
+.env.*
+!.env.example
+*.log
+*.sqlite*
+*.db
+*.db-*
+*.bak
+*.tmp
+*.zip
+*.dll
+*.pdb
+*.dylib
+*.so
+*.exe
+screenshots/
+logs/
+TestResults/
+.idea/
+.vscode/
+*.user
+*.suo
+
+# Retired credential prototypes are not part of the current Mod.
+/tools/KeySetup.swift
+/tools/配置 DeepSeek Key.command
+/tests/keychain/

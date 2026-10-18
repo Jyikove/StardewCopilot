@@ -1,0 +1,10 @@
+{
+  "Name": "Stardew Copilot",
+  "Author": "StardewCodexChat",
+  "Version": "0.17.1",
+  "Description": "A macOS Stardew Valley assistant with read-only game queries, DeepSeek streaming chat, adaptive screenshot analysis, and local key configuration.",
+  "UniqueID": "StardewCodexChat.CodexChat",
+  "EntryDll": "StardewCopilot.dll",
+  "MinimumApiVersion": "4.5.2",
+  "UpdateKeys": []
+}

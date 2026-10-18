@@ -1,0 +1,6 @@
+<Project>
+  <PropertyGroup>
+    <GamePath Condition="'$(GamePath)' == '' and '$(GAME_PATH)' != ''">$(GAME_PATH)</GamePath>
+    <GamePath Condition="'$(GamePath)' == ''">$(HOME)/Library/Application Support/Steam/steamapps/common/Stardew Valley/Contents/MacOS</GamePath>
+  </PropertyGroup>
+</Project>
