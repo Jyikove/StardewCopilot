@@ -159,7 +159,8 @@ internal sealed class ChatSession
             try
             {
                 var loaded = loading.GetAwaiter().GetResult(); conversation.Restore(loaded.State);
-                Display.AddRange(loaded.State.Transcript.TakeLast(80));
+                Display.AddRange(loaded.State.Transcript.TakeLast(80).Select(m => m.Role == "assistant"
+                    ? m with { Text = runner.LocalizeHistoryForDisplay(m.Text) } : m));
                 Status = "已恢复此存档的对话，可以继续提问";
                 if (loaded.RecoveredBackup) Display.Add(new("system", "对话主文件不可用，已从 Mod 文件夹内的备份恢复。"));
             }

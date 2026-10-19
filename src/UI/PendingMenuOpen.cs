@@ -35,7 +35,7 @@ internal sealed class PendingMenuOpen
         if (check == null) return false;
         if (save != saveKey || !ReferenceEquals(root, Game1.activeClickableMenu)
             || !ReferenceEquals(top, MenuLayer.Top(root))
-            || !MenuOpenPolicy.CanOpen(trigger, allowOverMenu: trigger == Keys.Enter))
+            || !MenuOpenPolicy.CanOpen(trigger, allowOverMenu: trigger == Keys.Enter || StardewModdingAPI.Context.IsMultiplayer))
         { Cancel(); return false; }
         if (!check.IsCompleted) return false;
         configured = check.GetAwaiter().GetResult();

@@ -316,7 +316,7 @@ int roundNumber = 0;
 var toolHandler = new StubHandler(async (request, token) => {
     using var body = JsonDocument.Parse(await request.Content!.ReadAsStringAsync(token));
     var root = body.RootElement;
-    Check(root.GetProperty("tools").GetArrayLength() == 9 && root.GetProperty("tool_choice").GetString() == "auto",
+    Check(root.GetProperty("tools").GetArrayLength() == 10 && root.GetProperty("tool_choice").GetString() == "auto",
         "query-enabled requests advertise the whitelist with automatic tool selection");
     if (++roundNumber == 1)
     {
@@ -349,6 +349,9 @@ using (var repeatHttp = new HttpClient(new StubHandler(async (request, token) =>
     if (n <= 3) return StreamAnswer(ToolChunk(new object[] { new { index = 0, id = "repeat_"+n, type = "function", function = new { name = "get_inventory", arguments = "{}" } } })
         + Event("", "tool_calls") + "data: [DONE]\n\n");
     Check(body.RootElement.GetProperty("tool_choice").GetString() == "none", "after three query rounds the model must give a final answer");
+    Check(!body.RootElement.TryGetProperty("tools",out _) && body.RootElement.GetProperty("messages").EnumerateArray()
+        .Any(m=>m.TryGetProperty("content",out var c)&&c.ValueKind==JsonValueKind.String&&c.GetString()!.Contains("本次查询预算已用完")),
+        "round limit removes tools and explicitly asks for an evidence-based final answer");
     return StreamAnswer(Event("查询结束。") + End());
 })))
 {
@@ -374,13 +377,66 @@ mainQueries.Tick();
 Check(invalidQueued.IsCompletedSuccessfully && reads == beforeInvalid, "dispatcher independently enforces the query whitelist");
 
 
+foreach (bool streaming in new[] { false, true })
+foreach (string scenario in new[] { "exact", "batch-overflow", "remaining-overflow" })
+{
+    int quotaRound=0;
+    var quotaGame=new FakeGameQueries();
+    var quotaLog=new List<string>();
+    using var quotaHttp=new HttpClient(new StubHandler(async (request,token)=>{
+        using var doc=JsonDocument.Parse(await request.Content!.ReadAsStringAsync(token));
+        var root=doc.RootElement;
+        int round=++quotaRound;
+        if(round==1)Check(root.GetProperty("tools").EnumerateArray().Any(t=>t.GetProperty("function").GetProperty("name").GetString()=="add_todo"),
+            "quota scenario has user-authorized todo permission before the limit");
+        bool final=scenario=="remaining-overflow" ? round==3 : round==2;
+        if(final)
+        {
+            Check(root.GetProperty("tool_choice").GetString()=="none"&&!root.TryGetProperty("tools",out _)
+                &&root.GetProperty("thinking").GetProperty("type").GetString()=="disabled",
+                "quota finalization disables all tools and further planning: "+scenario+" streaming="+streaming);
+            var wire=root.GetProperty("messages").EnumerateArray().ToArray();
+            var requested=wire.Where(m=>m.TryGetProperty("tool_calls",out _)).SelectMany(m=>m.GetProperty("tool_calls").EnumerateArray())
+                .Select(c=>c.GetProperty("id").GetString()).OrderBy(s=>s).ToArray();
+            var results=wire.Where(m=>m.GetProperty("role").GetString()=="tool").ToArray();
+            Check(requested.SequenceEqual(results.Select(m=>m.GetProperty("tool_call_id").GetString()).OrderBy(s=>s)),
+                "all tool-call IDs receive one result, including skipped calls: "+scenario);
+            int denied=scenario=="exact"?0:scenario=="batch-overflow"?1:2;
+            Check(results.Count(m=>m.GetProperty("content").GetString()!.Contains("NOT executed"))==denied,
+                "excess calls explicitly report no data or action: "+scenario);
+            Check(wire[^1].GetProperty("content").GetString()!.Contains("不再查询或添加待办"),
+                "final instruction requires existing evidence and honest gaps");
+            return streaming?StreamAnswer(Event("根据已取得的信息回答，未查到的部分暂不作结论。")+End())
+                :Answer("根据已取得的信息回答，未查到的部分暂不作结论。");
+        }
+        int count=scenario=="exact"?8:scenario=="batch-overflow"?9:round==1?7:3;
+        var calls=Enumerable.Range(0,count).Select(i=>(object)new{
+            index=i,id="quota_"+round+"_"+i,type="function",function=new{
+                name=scenario=="remaining-overflow"&&round==2&&i>0 ? (i==1?"wiki_search":"add_todo") : "get_inventory",
+                arguments=scenario=="remaining-overflow"&&round==2&&i>0 ? (i==1?"{\"query\":\"blocked search\"}":"{\"text\":\"blocked todo\"}") : "{}"
+            }
+        }).ToArray();
+        return streaming ? StreamAnswer(ToolChunk(calls)+End("tool_calls")) : new HttpResponseMessage(HttpStatusCode.OK){
+            Content=new StringContent(JsonSerializer.Serialize(new{choices=new[]{new{finish_reason="tool_calls",message=new{role="assistant",content="",tool_calls=calls}}}}))};
+    }));
+    var chunks=new StringBuilder();
+    string answer=await new DeepSeekClient(new FakeSecret(dummyKey),quotaHttp,diagnostic:quotaLog.Add).AskAsync(options,
+        new Conversation().BuildMessages("查看背包，并帮我添加待办：准备食物"),default,streaming?t=>chunks.Append(t):null,quotaGame);
+    Check(answer=="根据已取得的信息回答，未查到的部分暂不作结论。"&&(!streaming||chunks.ToString()==answer),
+        "query budget returns the final answer instead of cancelling: "+scenario+" streaming="+streaming);
+    Check(quotaGame.Calls.Count==9&&quotaGame.Calls.Count(c=>c.StartsWith("get_inventory"))==8
+        &&!quotaGame.Calls.Any(c=>c.StartsWith("add_todo"))&&quotaRound==(scenario=="remaining-overflow"?3:2)
+        &&quotaLog.Count(l=>l.StartsWith("QueryFinalizing"))==1,
+        "only eight details execute, blocked writes stay blocked, and one final answer is requested");
+}
+
 var oversizedCallGame = new FakeGameQueries();
 using (var tooManyHttp = new HttpClient(new StubHandler((_, _) => Task.FromResult(StreamAnswer(
-    ToolChunk(Enumerable.Range(0,9).Select(i => (object)new { index = i, id = "too_many_"+i, type = "function", function = new { name = "get_inventory", arguments = "{}" } }).ToArray())
+    ToolChunk(Enumerable.Range(0,17).Select(i => (object)new { index = i, id = "too_many_"+i, type = "function", function = new { name = "get_inventory", arguments = "{}" } }).ToArray())
     + Event("", "tool_calls") + "data: [DONE]\n\n")))))
 {
     var error = await Failure(() => new DeepSeekClient(new FakeSecret(dummyKey), tooManyHttp).AskAsync(options, messages, CancellationToken.None, _ => { }, oversizedCallGame));
-    Check(error is InvalidOperationException && oversizedCallGame.Calls.Count == 1, "more than eight tool calls are rejected before any detail query executes");
+    Check(error is InvalidOperationException && oversizedCallGame.Calls.Count == 1, "malformed batches beyond the separate 16-call response bound are rejected before any detail executes");
 }
 var unknownGame = new FakeGameQueries();
 int unknownRound = 0;
@@ -675,6 +731,7 @@ try {
         using var body=JsonDocument.Parse(await request.Content!.ReadAsStringAsync(token));var root=body.RootElement;
         Check(!root.TryGetProperty("tools",out _) && root.GetProperty("tool_choice").GetString()=="none","help disables all game queries and todo writes");
         var helpMessages=root.GetProperty("messages");
+        Check(helpMessages[0].GetProperty("content").GetString()!.Split(AssistantPersona.Voice).Length==2,"help serialized request shares persona once and keeps authoritative facts");
         Check(helpMessages.GetArrayLength()==2 && helpMessages[0].GetProperty("content").GetString()!.Contains(ModHelp.Facts)
             && helpMessages[1].GetProperty("content").GetString()=="本Mod能做什么？","help uses current authoritative capabilities and the question only");
         helpRequests++;return StreamAnswer(Event("可以对话、查询游戏状态和管理待办；不支持地图标记。")+End());
@@ -762,6 +819,48 @@ using(var preflightHttp=new HttpClient(new StubHandler(async(req,token)=>{
     Check(cacheGame.Calls.Count==2,"cache fast path still rereads current overview and todos");
 }
 
+foreach(bool cachedQuota in new[]{false,true})
+{
+    int quotaRequests=0,quotaLookups=0;
+    const string quotaSource="https://stardewvalleywiki.com/Fish_Smoker";
+    string quotaEvidence=JsonSerializer.Serialize(new{cacheOnly=cachedQuota,chunks=new[]{new{url=quotaSource,stale=false,body="synthetic evidence"}}});
+    using var evidenceQuotaHttp=new HttpClient(new StubHandler(async(request,token)=>{
+        using var doc=JsonDocument.Parse(await request.Content!.ReadAsStringAsync(token));
+        var root=doc.RootElement;
+        int round=++quotaRequests;
+        if(!cachedQuota&&round==1)return StreamAnswer(ToolChunk(new object[]{new{index=0,id="evidenceQuota",type="function",function=new{name="wiki_search",arguments="{\"query\":\"fixture\"}"}}})+End("tool_calls"));
+        if(round==(cachedQuota?1:2))return StreamAnswer(ToolChunk(Enumerable.Range(0,9).Select(i=>(object)new{
+            index=i,id="evidenceDetail"+i,type="function",function=new{name=i==8?"wiki_search":"get_inventory",arguments=i==8?"{\"query\":\"must not run\"}":"{}"}
+        }).ToArray())+End("tool_calls"));
+        Check(!root.TryGetProperty("tools",out _)&&root.GetProperty("tool_choice").GetString()=="none","evidence survives a tool-free quota finalization");
+        return StreamAnswer(Event("已有资料支持的结论["+quotaSource+"]。")+End());
+    }));
+    string result=await new DeepSeekClient(new FakeSecret(dummyKey),evidenceQuotaHttp,(_,_)=>{quotaLookups++;return Task.FromResult(quotaEvidence);},
+        cachedKnowledge:(_,_)=>Task.FromResult<string?>(cachedQuota?quotaEvidence:null))
+        .AskAsync(options,new Conversation().BuildMessages("我现在需要建议"),default,_=>{},new FakeGameQueries());
+    Check(quotaLookups==(cachedQuota?0:1)&&quotaRequests==(cachedQuota?2:3),"skipped knowledge calls cannot invoke a provider or cause extra tool rounds");
+    Check(cachedQuota ? !result.Contains("https://") : result.Contains("["+quotaSource+"]"),
+        "quota final answer preserves online citations and the existing cache-only citation policy");
+}
+
+var quotaSaveRoot=Path.Combine(Path.GetTempPath(),"copilot-quota-"+Guid.NewGuid().ToString("N"));
+try
+{
+    int quotaSaveRequests=0;
+    using var quotaSaveHttp=new HttpClient(new StubHandler((_,_)=>Task.FromResult(++quotaSaveRequests==1
+        ? StreamAnswer(ToolChunk(Enumerable.Range(0,9).Select(i=>(object)new{index=i,id="persistQuota"+i,type="function",function=new{name="get_inventory",arguments="{}"}}).ToArray())+End("tool_calls"))
+        : StreamAnswer(Event("已根据当前查到的信息整理好，没查到的部分暂不确定。")+End()))));
+    var quotaStore=new ConversationStore(quotaSaveRoot);
+    var quotaSession=new ChatSession(new DeepSeekClient(new FakeSecret(dummyKey),quotaSaveHttp),new FakeGameQueries(),quotaStore);
+    quotaSession.SwitchSave("quota-save");await Finish(quotaSession);
+    quotaSession.Draft.Replace("今天要做什么？");Check(quotaSession.Send(options),"quota-bound question starts normally");
+    await Finish(quotaSession);
+    var stored=(await quotaStore.LoadAsync("quota-save")).State;
+    Check(stored.Transcript.Length==2&&stored.Transcript[1].Text.Contains("整理好")&&quotaSession.Display[^1].Role=="assistant"
+        &&quotaSession.Draft.Text==""&&quotaSaveRequests==2,"quota final answer reaches the UI and persists as a successful per-save exchange");
+}
+finally{if(Directory.Exists(quotaSaveRoot))Directory.Delete(quotaSaveRoot,true);}
+
 Check(GameTools.TryArguments("wiki_search","{\"query\":\"summer fish\",\"refresh\":true}",out var refreshQuery)&&refreshQuery=="summer fish"&&GameTools.RefreshRequested("{\"refresh\":true}"),"knowledge tool accepts explicit boolean refresh authorization");
 Check(!GameTools.TryArguments("wiki_search","{\"query\":\"summer fish\",\"refresh\":\"true\"}",out _),"refresh rejects malformed non-boolean arguments");
 int refreshRound=0,freshRequests=0;
@@ -791,21 +890,53 @@ using(var retryHttp=new HttpClient(new StubHandler((req,token)=>Task.FromResult(
 }
 Check(ChatCommands.Parse("/search").Kind==ChatCommandKind.Search && ChatCommands.Parse("/search 夏季能钓什么鱼？").Argument=="夏季能钓什么鱼？",
     "search command recognizes its question and empty usage form");
-Check(GameTools.TodoWriteRequested("帮我记下明天找罗宾") && GameTools.TodoWriteRequested("添加待办：浇水")
-    && !GameTools.TodoWriteRequested("我明天应该做什么？") && !GameTools.TodoWriteRequested("还有哪些待办没完成？")
-    && !GameTools.TodoWriteRequested("不要擅自添加待办"),"todo write permission requires a current explicit request rather than advice or a read request");
-var deniedTodoGame=new FakeGameQueries();int deniedTodoRound=0;
-using(var deniedTodoHttp=new HttpClient(new StubHandler(async (request,token)=>{
+// Natural-language intent belongs to the model, not a local word/phrase gate.
+// These stubs verify tool availability and persistence, not the real model's judgment.
+string naturalTodoRoot=Path.Combine(Path.GetTempPath(),"copilot-todo-intent-"+Guid.NewGuid());
+try {
+    foreach (var scenario in new[] {
+        (Request:"为我增加培养海莉好感的待办", Save:"natural-one"),
+        (Request:"为我加个待办，培养海莉好感", Save:"natural-two"),
+        (Request:"这事帮我安排到清单里吧", Save:"natural-no-keywords") })
+    {
+        var naturalTodos=new TodoList(naturalTodoRoot,scenario.Save);
+        var naturalDispatch=new MainThreadQueries((name,args)=>name=="get_overview" ? "{\"worldReady\":true}" : naturalTodos.ExecuteTool(name,args));
+        int naturalRound=0;
+        using var naturalHttp=new HttpClient(new StubHandler(async (request,token)=>{
+            using var body=JsonDocument.Parse(await request.Content!.ReadAsStringAsync(token));
+            if(++naturalRound==1) {
+                Check(body.RootElement.GetProperty("tools").EnumerateArray().Any(t=>t.GetProperty("function").GetProperty("name").GetString()=="add_todo"),
+                    "reported natural request exposes add_todo: "+scenario.Save);
+                return StreamAnswer(ToolChunk(new object[]{new{index=0,id="natural-add",type="function",function=new{name="add_todo",arguments="{\"text\":\"培养海莉好感\"}"}}})+Event("","tool_calls")+"data: [DONE]\n\n");
+            }
+            var wire=body.RootElement.GetProperty("messages");
+            Check(wire[wire.GetArrayLength()-1].GetProperty("content").GetString()!.Contains("\"added\":true"),
+                "natural request receives actual successful write confirmation: "+scenario.Save);
+            return StreamAnswer(Event("已记下培养海莉好感。")+End());
+        }));
+        var naturalTask=new DeepSeekClient(new FakeSecret(dummyKey),naturalHttp).AskAsync(options,
+            new Conversation().BuildMessages(scenario.Request),default,_=>{},naturalDispatch);
+        var naturalTimer=System.Diagnostics.Stopwatch.StartNew();
+        while(!naturalTask.IsCompleted&&naturalTimer.ElapsedMilliseconds<5000) { naturalDispatch.Tick(); Thread.Sleep(1); }
+        Check(naturalTask.IsCompletedSuccessfully&&naturalTodos.Items.Count==1
+            &&new TodoList(naturalTodoRoot,scenario.Save).Items.Single().Text=="培养海莉好感",
+            "natural request persists an unfinished todo in the correct save: "+scenario.Save);
+    }
+} finally { if(Directory.Exists(naturalTodoRoot))Directory.Delete(naturalTodoRoot,true); }
+var adviceGame=new FakeGameQueries();
+var adviceHistory=new Conversation();
+adviceHistory.AddExchange("帮我加个待办：明天找罗宾", "已记下。");
+using(var adviceHttp=new HttpClient(new StubHandler(async (request,token)=>{
     using var body=JsonDocument.Parse(await request.Content!.ReadAsStringAsync(token));
-    Check(!body.RootElement.GetProperty("tools").EnumerateArray().Any(t=>t.GetProperty("function").GetProperty("name").GetString()=="add_todo"),
-        "ordinary advice does not advertise the todo write tool");
-    if(++deniedTodoRound==1)return StreamAnswer(ToolChunk(new object[]{new{index=0,id="unrequested",type="function",function=new{name="add_todo",arguments="{\"text\":\"自行添加的建议\"}"}}})+Event("","tool_calls")+"data: [DONE]\n\n");
-    Check(body.RootElement.GetProperty("messages").EnumerateArray().Any(m=>m.GetProperty("content").ValueKind==JsonValueKind.String&&m.GetProperty("content").GetString()!.Contains("Todo write denied")),"unrequested todo calls are denied in execution as well as hidden in definitions");
-    return StreamAnswer(Event("建议明天浇水。")+End());
+    Check(body.RootElement.GetProperty("tools").EnumerateArray().Any(t=>t.GetProperty("function").GetProperty("name").GetString()=="add_todo"),
+        "model keeps the todo tool available without local intent classification");
+    Check(body.RootElement.GetProperty("messages")[0].GetProperty("content").GetString()!.Contains(GameTools.TodoPolicy),
+        "model receives semantic authorization, negation, history and no-unsolicited-save instructions");
+    return StreamAnswer(Event("可以先给作物浇水。")+End());
 })))
 {
-    await new DeepSeekClient(new FakeSecret(dummyKey),deniedTodoHttp).AskAsync(options,new Conversation().BuildMessages("明天应该做什么？"),default,_=>{},deniedTodoGame);
-    Check(!deniedTodoGame.Calls.Any(c=>c.StartsWith("add_todo")),"unrequested todo writes never reach the save's todo list");
+    await new DeepSeekClient(new FakeSecret(dummyKey),adviceHttp).AskAsync(options,adviceHistory.BuildMessages("明天应该做什么？"),default,_=>{},adviceGame);
+    Check(!adviceGame.Calls.Any(c=>c.StartsWith("add_todo")),"advice without a model add_todo call creates no todo even with an earlier add request");
 }
 int researchRound=0,researchSearches=0,ordinaryProviders=0;
 var researchGame=new FakeGameQueries();
@@ -815,6 +946,7 @@ string liveEvidence="{\"quality\":\"High\",\"cacheOnly\":false,\"chunks\":[{\"ur
 using(var researchHttp=new HttpClient(new StubHandler(async (request,token)=>{
     using var body=JsonDocument.Parse(await request.Content!.ReadAsStringAsync(token));var json=body.RootElement;
     int round=++researchRound;
+    Check(json.GetProperty("messages")[0].GetProperty("content").GetString()!.Split(AssistantPersona.Voice).Length==2,"research serialized request retains shared persona without duplicate injection");
     if(round<=2)Check(json.GetProperty("thinking").GetProperty("type").GetString()=="enabled" && json.GetProperty("reasoning_effort").GetString()=="high"
         && !json.TryGetProperty("tool_choice",out _),"research discovery uses high thinking with automatic tools");
     else Check(json.GetProperty("thinking").GetProperty("type").GetString()=="disabled"&&!json.TryGetProperty("tools",out _)&&json.GetProperty("tool_choice").GetString()=="none",
@@ -982,6 +1114,169 @@ using(var partialHttp=new HttpClient(new StubHandler((_,_)=>{
     finally{partialStream.Release();}
 }
 
+// Persona is a system instruction, never a mandatory prefix or a machine-output decoration.
+var personaPrompts = new[] {
+    (Name:"chat", Text:new Conversation().BuildMessages("fixture")[0].Text, Before:2566),
+    (Name:"search", Text:Conversation.BuildSearchMessages("fixture")[0].Text, Before:1088),
+    (Name:"screen", Text:ScreenVision.Instructions, Before:1750),
+    (Name:"help", Text:ModHelp.Messages("fixture")[0].Text, Before:4158)
+};
+foreach (var prompt in personaPrompts)
+{
+    Check(prompt.Text.Split(AssistantPersona.Voice).Length == 2,
+        prompt.Name + " includes shared player voice exactly once");
+    Check(prompt.Text.Contains("同条不重复，相邻回复避免连用") && prompt.Text.Contains("来源标记遵守当前模式"),
+        prompt.Name + " keeps natural address cadence and mode-specific source rules");
+    int estimate = Conversation.EstimateTokens(prompt.Text);
+    Check(estimate <= prompt.Before * 1.15, prompt.Name + " prompt estimate grows at most 15% (" + estimate + ")");
+    Check(prompt.Name == "help" ? !prompt.Text.Contains(AssistantPersona.Planning)
+        : prompt.Text.Split(AssistantPersona.Planning).Length == 2,
+        prompt.Name + " uses selective planning once only where the mode supports it");
+}
+foreach (string text in new[] { "你好！", "我终于攒够钱升级背包了！", "我终于把矿井 100 层打通了！", "今天下矿又亏了一堆钱。", "今天好累", "陪我聊天", "今天玩得有点累，不想干活了。", "我准备直接出门钓鱼了。", "我准备出门了。", "谢谢！" })
+    Check(AssistantPersona.AllowsOptionalKnowledgeLookup(text), "explicit social turn avoids mandatory knowledge preflight: " + text);
+foreach (string text in new[] { "铜矿石在哪里获得？", "那草莓呢？", "我终于攒够钱了，帮我安排明天的工作", "今天亏了很多钱，如何避免", "我终于升级背包了，值得吗", "/search 今天下矿亏了钱", "/help 你好", "铁矿石获取方式", "我有哪些作物", "我今天好累，记下明天买种子", "终于升级了 how do I get iron", "那今天我要做什么？", "塞巴斯蒂安最喜欢什么礼物？", "今天好累，帮我完整规划明天", "啊啊啊，今天下矿又死了，东西还掉了一堆！", "我准备出门了，河豚需要什么天气", "我想休息，哪些订单快到期？" })
+    Check(!AssistantPersona.AllowsOptionalKnowledgeLookup(text), "questions and actions retain existing retrieval routing: " + text);
+
+foreach (var fixture in new[] { (Question:"今天下矿又亏了一堆钱。", Answer:"这趟有点亏呢，老大。"),
+    (Question:"我终于攒够钱升级背包了！", Answer:"终于攒够啦！"), (Question:"你好！", Answer:"嗨，今天过得怎么样？"),
+    (Question:"今天玩得有点累，不想干活了。", Answer:"那今天就歇着吧，老大。"),
+    (Question:"我准备直接出门钓鱼了。", Answer:"钓鱼去呀，老大。"), (Question:"谢谢！", Answer:"不客气！") })
+{
+    int socialRequests = 0, socialCacheReads = 0;
+    var socialGame = new FakeGameQueries();
+    using var socialHttp = new HttpClient(new StubHandler(async (request, token) => {
+        socialRequests++;
+        using var json = JsonDocument.Parse(await request.Content!.ReadAsStringAsync(token));
+        var body = json.RootElement;
+        Check(body.GetProperty("tool_choice").GetString() == "auto", "social reply is not forced into Wiki lookup");
+        Check(body.GetProperty("messages")[0].GetProperty("content").GetString()!.Contains(GameTools.TodoPolicy),
+            "social reply retains model instructions against unsolicited todo writes");
+        string system = body.GetProperty("messages")[0].GetProperty("content").GetString()!;
+        Check(system.Contains(AssistantPersona.Dialogue), "actual serialized request includes interaction strategy");
+        return StreamAnswer(Event(fixture.Answer) + End());
+    }));
+    var socialApi = new DeepSeekClient(new FakeSecret(dummyKey), socialHttp,
+        (_, _) => throw new Exception("No forced knowledge lookup for explicit social turn"),
+        cachedKnowledge: (_, _) => { socialCacheReads++; return Task.FromResult<string?>(null); });
+    string result = await socialApi.AskAsync(options, new Conversation().BuildMessages(fixture.Question), default, _ => {}, socialGame);
+    Check(result == fixture.Answer && socialRequests == 1 && socialCacheReads == 0, "social fixture passes through without address prefix, cache preflight, extra API call or unverified-mechanics warning");
+    Check(socialGame.Calls.Any(c => c.StartsWith("get_overview")) && socialGame.Calls.Any(c => c.StartsWith("get_todos")),
+        "social request still receives fresh overview and existing goals");
+    Check(!socialGame.Calls.Any(c=>c.StartsWith("add_todo")),"social model response without a write call creates no todos");
+}
+
+// This verifies transport and evidence/context availability, not the model's real prioritization.
+int dailyRound = 0, dailyWikiReads = 0;
+var dailyGame = new ScenarioGameQueries(name => name switch {
+    "get_crops" => "{\"unwatered\":60,\"crop\":\"blueberry fixture\"}",
+    "get_quests" => "{\"daysLeft\":1,\"name\":\"delivery fixture\",\"completed\":false}",
+    "get_todos" => "{\"goals\":[\"save for a coop\"],\"completed\":false}",
+    _ => "{\"worldReady\":true,\"time\":920,\"money\":3000}"
+});
+var dailyContext = new Conversation();
+dailyContext.AddExchange("我想攒钱建鸡舍，别反复催我送礼。", "好，按你的节奏来。");
+dailyContext.ApplySummary("长期目标是建鸡舍；玩家不希望反复被提醒送礼。旧的作物状态需要重查。", 2);
+using (var dailyHttp = new HttpClient(new StubHandler(async (request, token) => {
+    using var doc = JsonDocument.Parse(await request.Content!.ReadAsStringAsync(token));
+    var body = doc.RootElement;
+    string system = body.GetProperty("messages")[0].GetProperty("content").GetString()!;
+    Check(system.Contains(AssistantPersona.Planning) && system.Contains("已拒绝的不反复催促"), "daily request carries selection and consent-to-reminders rules");
+    Check(system.Contains(GameTools.TodoPolicy), "daily planning retains model instructions against unsolicited todo writes");
+    if (++dailyRound == 1)
+    {
+        Check(body.GetProperty("tool_choice").GetProperty("function").GetProperty("name").GetString() == "wiki_search", "daily knowledge still passes through mandatory evidence retrieval");
+        return StreamAnswer(ToolChunk(new object[] { new { index=0,id="dailyWiki",type="function",function=new { name="wiki_search",arguments="{\"query\":\"fixture planning\"}" } } }) + End("tool_calls"));
+    }
+    if (dailyRound == 2) return StreamAnswer(ToolChunk(new object[] {
+        new { index=0,id="dailyCrops",type="function",function=new { name="get_crops",arguments="{}" } },
+        new { index=1,id="dailyQuests",type="function",function=new { name="get_quests",arguments="{}" } }
+    }) + End("tool_calls"));
+    var contents = body.GetProperty("messages").EnumerateArray().Select(m => m.TryGetProperty("content",out var c) && c.ValueKind==JsonValueKind.String ? c.GetString()! : "").ToArray();
+    Check(contents.Any(c => c.Contains("\"unwatered\":60")) && contents.Any(c => c.Contains("\"daysLeft\":1")), "unfiltered current crop and quest facts reach planning together");
+    Check(contents.Any(c => c.Contains(dailyContext.Summary)) && contents.Any(c => c.Contains("save for a coop")), "planning retains real supplied goals and reminder preference without replacing current evidence");
+    return StreamAnswer(Event("老大，记得给没浇水的60格蓝莓浇好水哦；还剩一天的订单也留意一下。") + End());
+})))
+{
+    string answer = await new DeepSeekClient(new FakeSecret(dummyKey),dailyHttp,(_,_) => {
+        dailyWikiReads++; return Task.FromResult(liveEvidence);
+    }).AskAsync(options,dailyContext.BuildMessages("那今天我要做什么？"),default,_=>{},dailyGame);
+    Check(dailyRound==3 && dailyWikiReads==1 && dailyGame.Calls.Contains("get_crops") && dailyGame.Calls.Contains("get_quests"), "daily fixtures retain bounded retrieval and actual detail tool round trips");
+    Check(!dailyGame.Calls.Any(c=>c.StartsWith("add_todo")), "planning model response without a write call creates no todos");
+    Check(answer.Contains("60格") && !answer.StartsWith("老大，老大"), "fixture response is passed through without an added persona wrapper");
+}
+
+// Independent client sessions on the same farm; shared directory is stricter than separate computers.
+string coopRoot=Path.Combine(Path.GetTempPath(),"copilot-coop-"+Guid.NewGuid());
+try
+{
+    string hostKey=PlayerSaveKey.Create("FixtureFarm_42",42,101), guestKey=PlayerSaveKey.Create("FixtureFarm_42",42,202);
+    Check(hostKey=="FixtureFarm_42:42:101"&&hostKey!=guestKey,"co-op keys preserve existing records while separating farmers on the same farm");
+    Check(PlayerSaveKey.Create(null,42,202)==PlayerSaveKey.Create(null,42,202)
+        &&guestKey!=PlayerSaveKey.Create("OtherFarm_43",43,202),"rejoining the same farmer keeps identity; joining another farm does not");
+    var coopStore=new ConversationStore(Path.Combine(coopRoot,"conversations"));
+    var hostTodos=new TodoList(Path.Combine(coopRoot,"todos"),hostKey);
+    var guestTodos=new TodoList(Path.Combine(coopRoot,"todos"),guestKey);
+    using var hostHttp=new HttpClient(new StubHandler((_,_)=>Task.FromResult(StreamAnswer(Event("房主的合成回答")+End()))));
+    using var guestHttp=new HttpClient(new StubHandler((_,_)=>Task.FromResult(StreamAnswer(Event("农场工的合成回答")+End()))));
+    var hostSession=new ChatSession(new DeepSeekClient(new FakeSecret(dummyKey),hostHttp),store:coopStore,todoList:()=>hostTodos);
+    var guestSession=new ChatSession(new DeepSeekClient(new FakeSecret(dummyKey),guestHttp),store:coopStore,todoList:()=>guestTodos);
+    hostSession.SwitchSave(hostKey);guestSession.SwitchSave(guestKey);
+    await Task.WhenAll(Finish(hostSession),Finish(guestSession));
+    hostSession.Draft.Replace("房主的问题");guestSession.Draft.Replace("农场工的问题");
+    Check(hostSession.Send(options)&&guestSession.Send(options),"both client sessions can ask at once without waiting for the other's response");
+    await Task.WhenAll(Finish(hostSession),Finish(guestSession));
+    var hostSaved=(await coopStore.LoadAsync(hostKey)).State;var guestSaved=(await coopStore.LoadAsync(guestKey)).State;
+    Check(hostSaved.Transcript.Last().Text=="房主的合成回答"&&guestSaved.Transcript.Last().Text=="农场工的合成回答",
+        "concurrent responses are persisted only to their own player records");
+    hostTodos.ExecuteTool("add_todo","{\"text\":\"房主造鸡舍\"}");guestTodos.ExecuteTool("add_todo","{\"text\":\"农场工找海莉\"}");
+    guestTodos.Toggle(0);
+    Check(hostTodos.Items.Single().Text=="房主造鸡舍"&&!hostTodos.Items.Single().Completed
+        &&guestTodos.Items.Single().Completed,"co-op todo content and completion remain private to each player");
+    guestSession.SwitchSave(null);guestSession.SwitchSave(guestKey);await Finish(guestSession);
+    Check(guestSession.Display.Last().Text=="农场工的合成回答"
+        &&new TodoList(Path.Combine(coopRoot,"todos"),guestKey).Items.Single().Completed,"a reconnect restores the farmhand's own chat and todo completion");
+    guestSession.Draft.Replace("/clearchat");guestSession.Send(options);await Finish(guestSession);
+    guestSession.Draft.Replace("/cleartodo");guestSession.Send(options);
+    Check((await coopStore.LoadAsync(guestKey)).State.Transcript.Length==0
+        &&(await coopStore.LoadAsync(hostKey)).State.Transcript.Length==2&&hostTodos.Items.Count==1&&guestTodos.Items.Count==0,
+        "farmhand clear commands never clear the host's private records");
+    using var departedHttp=new HttpClient(new StubHandler(async(_,token)=>{await Task.Delay(200,token);return StreamAnswer(Event("离线后的回答")+End());}));
+    var departed=new ChatSession(new DeepSeekClient(new FakeSecret(dummyKey),departedHttp),store:coopStore);
+    departed.SwitchSave(guestKey);await Finish(departed);departed.Draft.Replace("断线前的问题");departed.Send(options);departed.SwitchSave(null);
+    await Task.Delay(250);
+    Check((await coopStore.LoadAsync(guestKey)).State.Transcript.Length==0,"disconnect cancels pending answers without writing into the departed player's record");
+}
+finally { if(Directory.Exists(coopRoot))Directory.Delete(coopRoot,true); }
+
+var personaMemory = new Conversation();
+personaMemory.AddExchange("我想攒钱建鸡舍，回答简单一点。", "记下这个目标了。");
+const string goalSummary = "玩家长期目标是攒钱建鸡舍，计划尚未完成；偏好简洁回答。历史背包状态需要重新查询。";
+using (var personaSummaryHttp = new HttpClient(new StubHandler(async (request, token) => {
+    using var json = JsonDocument.Parse(await request.Content!.ReadAsStringAsync(token));
+    var body = json.RootElement;
+    string instruction = body.GetProperty("messages")[0].GetProperty("content").GetString()!;
+    Check(!instruction.Contains(AssistantPersona.Voice) && !instruction.Contains("老大"), "summary remains machine-facing without player voice");
+    Check(instruction.Contains("未完成计划、交流偏好") && instruction.Contains("不记录助手的称呼习惯"),
+        "summary preserves goals and preferences rather than persona performance");
+    Check(body.GetProperty("max_tokens").GetInt32() == 1024 && body.GetProperty("tool_choice").GetString() == "none",
+        "summary retains original token and tool budgets");
+    return Answer(goalSummary);
+})))
+{
+    string summary = await new DeepSeekClient(new FakeSecret(dummyKey), personaSummaryHttp)
+        .SummarizeAsync(options, "", personaMemory.Messages, default);
+    personaMemory.ApplySummary(summary, 2);
+    var afterSummary = personaMemory.BuildMessages("继续这个目标");
+    Check(afterSummary[0].Text.Contains(AssistantPersona.Voice) && afterSummary.Any(m => m.Text.Contains(goalSummary)),
+        "compression keeps supplied goals and stable system persona independently");
+    var restoredPersona = new Conversation(); restoredPersona.Restore(personaMemory.Snapshot());
+    Check(restoredPersona.BuildMessages("接着聊")[0].Text == afterSummary[0].Text, "save restore does not rely on summary to recover address rules");
+    restoredPersona.Clear();
+    Check(restoredPersona.BuildMessages("新话题")[0].Text == afterSummary[0].Text && restoredPersona.Summary == "",
+        "clearing history clears goals but retains the system persona");
+}
+
 Console.WriteLine($"All {passed} checks passed. No real Key or network was used.");
 
 sealed class FakeSecret(string? key) : ISecretStore
@@ -1035,4 +1330,11 @@ sealed class FakeGameQueries : IGameQueries
         Calls.Add(name + arguments);
         return Task.FromResult(name == "get_overview" ? "{\"worldReady\":true,\"time\":920}" : "{\"matches\":[{\"container\":\"wood chest\",\"count\":37}]}");
     }
+}
+
+sealed class ScenarioGameQueries(Func<string,string> result) : IGameQueries
+{
+    public List<string> Calls { get; } = new();
+    public Task<string> QueryAsync(string name,string arguments,CancellationToken token)
+    { Calls.Add(name); return Task.FromResult(result(name)); }
 }

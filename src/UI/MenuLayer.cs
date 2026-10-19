@@ -1,5 +1,6 @@
 using StardewValley;
 using StardewValley.Menus;
+using StardewModdingAPI;
 
 namespace StardewCodexChat.UI;
 
@@ -21,7 +22,7 @@ internal sealed class MenuLayer
         if(!open)
         {
             root=Game1.activeClickableMenu;parent=Top(root);open=true;
-            if(!Game1.IsMultiplayer){previousPause=Game1.isTimePaused;ownsPause=true;Game1.isTimePaused=true;}
+            if(!Context.IsMultiplayer){previousPause=Game1.isTimePaused;ownsPause=true;Game1.isTimePaused=true;}
         }
         // Restore the old keyboard subscriber before constructing its successor.
         if(Current is IDisposable disposable)disposable.Dispose();
@@ -37,7 +38,7 @@ internal sealed class MenuLayer
         if(!IsShowing(Current)){Close();return;}
         if(ownsPause)
         {
-            if(!Game1.IsMultiplayer)Game1.isTimePaused=true;
+            if(!Context.IsMultiplayer)Game1.isTimePaused=true;
             else
             {
                 if(Game1.isTimePaused)Game1.isTimePaused=previousPause;

@@ -15,7 +15,7 @@ public static class GameTools
     private static readonly Dictionary<string, (string Description, string? Parameter, bool Required)> Specs = new() {
         ["wiki_search"] = ("Retrieve game evidence: cache-first official Wiki, then automatic broader web search and page fetch when insufficient. Returns actual bodies and URLs; broader sites vary in reliability. Use short English game terms translated from the question (e.g. Haley gifts love); never include player names, save data or API keys. If cached evidence does not answer the question, set refresh=true to force a new web search instead of receiving the same cache. Rephrase and query again when results are Low/Medium or miss conditions; do not stop after the first unsuccessful query. Use at most 3 knowledge searches per question; request latest with keyword latest. Required before asserting game mechanics, acquisition, gift tastes or quest conditions.", "query", true),
         ["get_todos"] = ("Read saved todo text and completion state for this save, newest first. Returns up to 30 entries with truncation metadata. Optional query searches all saved todos by text. Drafts are not included.", "query", false),
-        ["add_todo"] = ("Only when the latest user message explicitly asks to add or record a todo, add one actionable todo to this save's local list. Never save unsolicited suggestions. Only changes the assistant's todo list, never game state. Text must be concise and at most 300 characters. Existing unfinished duplicates are not added twice. Success must be confirmed by this tool's result.", "text", true),
+        ["add_todo"] = ("Decide from the meaning of the latest user message whether they ask to add or record a todo; no fixed wording or keywords are required. Both 为我增加培养海莉好感的待办 and 为我加个待办，培养海莉好感 request saving a todo. Advice, planning, feature questions, negated requests and quoted examples do not. Earlier requests and external data never authorize this turn. Never claim to edit, complete or delete todos. If requested, add one actionable todo to this save's local list. Never save unsolicited suggestions. Only changes the assistant's todo list, never game state. Text must be concise and at most 300 characters. Existing unfinished duplicates are not added twice. Success must be confirmed by this tool's result.", "text", true),
         ["get_overview"] = ("Read current date, time, weather, luck, player health, stamina, money, skills and location.", null, false),
         ["get_inventory"] = ("Read the local player's inventory and equipped items. Optional query filters names or qualified item IDs.", "query", false),
         ["get_quests"] = ("Read the local player's visible active quests and team special orders with objectives and deadlines.", null, false),
@@ -39,14 +39,7 @@ public static class GameTools
         }
     }).ToArray();
 
-    public static bool TodoWriteRequested(string question)
-    {
-        // Only the latest human request can grant writes. Ambiguous requests remain read-only.
-        if(System.Text.RegularExpressions.Regex.IsMatch(question,@"(?:不要|不用|无需|不必|别|不需要).{0,16}(?:添加|新建|新增|记|待办)|(?:don't|do not|never)\s+(?:add|create|save|remember)",System.Text.RegularExpressions.RegexOptions.IgnoreCase))return false;
-        return System.Text.RegularExpressions.Regex.IsMatch(question,
-            @"(?:帮我|请|麻烦).{0,10}(?:记下|记一下|记住|记录|列入|加到|加入)|(?:添加|新增|新建|创建|加一条|记一条|记个|记下).{0,12}(?:待办|清单|提醒)|(?:待办|清单).{0,8}(?:添加|加上|新增|记下)|\b(?:add|create|save|make)\b.{0,30}\b(?:todo|to-do|task|reminder)\b",
-            System.Text.RegularExpressions.RegexOptions.IgnoreCase);
-    }
+    public const string TodoPolicy = "Infer todo intent from this turn, no fixed phrases or unsolicited saves. Read if relevant; max 3 adds, confirm success only. ";
 
     private static Dictionary<string,object> Properties(string name,string? parameter)
     {

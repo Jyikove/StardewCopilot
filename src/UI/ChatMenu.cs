@@ -299,12 +299,16 @@ internal sealed class ChatMenu : IClickableMenu, IDisposable
         Icon(b, "close", close.X + 7, close.Y + 7, Muted);
         Fill(b, new(panel.X + 1, panel.Y + 50, panel.Width - 2, 1), Border * .65f);
         string[] labels = { "对话", "待办", "帮助" };
+        string[] tabIcons = { "chat", "todo", "help" };
         for (int i = 0; i < tabs.Length; i++)
         {
             Rectangle r = tabs[i]; bool active = selectedTab == i;
             if (active) Card(b, r, new Color(235, 235, 218), new Color(235, 235, 218));
             Vector2 labelSize = font.Measure(labels[i], .82f);
-            Text(b, labels[i], r.Center.X - labelSize.X / 2, r.Center.Y - labelSize.Y / 2, active ? Ink : Muted, .82f);
+            const int iconSize = 18, iconGap = 8;
+            int groupX = (int)Math.Round(r.Center.X - (iconSize + iconGap + labelSize.X) / 2);
+            Icon(b, tabIcons[i], groupX, r.Center.Y - iconSize / 2, active ? Accent : Muted);
+            Text(b, labels[i], groupX + iconSize + iconGap, r.Center.Y - labelSize.Y / 2, active ? Ink : Muted, .82f);
             if (i < tabs.Length - 1) Fill(b, new(r.Right, r.Y + 9, 1, r.Height - 18), Border * .55f);
             if (active) Fill(b, new(r.X + 10, r.Bottom - 2, r.Width - 20, 2), Accent);
         }
@@ -752,7 +756,17 @@ internal sealed class ChatMenu : IClickableMenu, IDisposable
         {
             case "star": P(7,0,2,16); P(0,7,16,2); P(5,5,6,6); P(6,3,4,10); P(3,6,10,4); break;
             case "close": for (int i=0;i<7;i++) { P(i*2,i*2,2,2); P(12-i*2,i*2,2,2); } break;
-            case "chat": P(1,1,14,2); P(1,1,2,11); P(13,1,2,11); P(1,10,14,2); P(3,12,2,3); break;
+            case "chat":
+                P(3,1,12,2); P(1,3,2,9); P(15,3,2,9); P(3,12,12,2);
+                P(3,14,2,3); P(5,14,2,1); P(5,6,2,2); P(10,6,2,2); break;
+            case "todo":
+                P(3,0,12,2); P(3,16,12,2); P(0,3,2,12); P(16,3,2,12);
+                P(1,1,2,2); P(15,1,2,2); P(1,15,2,2); P(15,15,2,2);
+                P(4,8,2,2); P(6,10,2,2); P(8,8,2,2); P(10,6,2,2); P(12,4,2,2); break;
+            case "help":
+                P(3,0,12,2); P(3,16,12,2); P(0,3,2,12); P(16,3,2,12);
+                P(1,1,2,2); P(15,1,2,2); P(1,15,2,2); P(15,15,2,2);
+                P(6,4,5,2); P(5,5,2,2); P(10,6,2,2); P(8,8,3,2); P(8,9,2,2); P(8,13,2,2); break;
             case "pin": P(4,0,8,2); P(5,2,6,6); P(2,8,12,2); P(7,10,2,6); break;
             case "sprout": P(7,6,2,10); P(1,1,5,3); P(3,4,5,3); P(10,0,5,3); P(8,3,5,3); break;
             case "clock": P(4,0,8,2); P(4,14,8,2); P(0,4,2,8); P(14,4,2,8); P(2,2,2,2); P(12,2,2,2); P(2,12,2,2); P(12,12,2,2); P(7,3,2,6); P(9,7,3,2); break;

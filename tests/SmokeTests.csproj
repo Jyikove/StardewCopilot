@@ -7,11 +7,14 @@
   </PropertyGroup>
   <ItemGroup>
     <Compile Remove="keychain/**/*.cs" />
+    <Compile Remove="multiplayer/**/*.cs" />
     <Compile Remove="knowledge/**/*.cs" />
     <Compile Remove="menu/**/*.cs" />
     <Compile Remove="screen/**/*.cs" />
     <Compile Remove="vision/**/*.cs" />
     <Compile Remove="ui/**/*.cs" />
+    <Compile Remove="terminology/**/*.cs" />
+    <Compile Remove="terminology-game/**/*.cs" />
     <Compile Include="../src/Core/*.cs" Link="Core/%(Filename)%(Extension)" />
     <Compile Include="../src/ChatSession.cs" Link="ChatSession.cs" />
   </ItemGroup>

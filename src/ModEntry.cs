@@ -24,6 +24,10 @@ public sealed class ModEntry : Mod
     private readonly MenuLayer menuLayer = new();
     private readonly PendingMenuOpen pendingOpen = new();
     private readonly Vision.GameScreenCapture screenCapture = new();
+    private readonly Core.GameTerminology terminology = new();
+    private bool terminologyDirty = true;
+    private LocalizedContentManager.LanguageCode? terminologyLanguage;
+    private StardewModdingAPI.Utilities.KeybindList OpenChatKey => Context.IsMultiplayer ? config.OpenChatMultiplayer : config.OpenChat;
 
     public override void Entry(IModHelper helper)
     {
@@ -42,25 +46,29 @@ public sealed class ModEntry : Mod
             message=>Monitor.Log(message,LogLevel.Trace), options:config.Knowledge);
         var retrieval = new Knowledge.KnowledgeRouter(knowledge,broad,config.Knowledge?.EnableBroadWeb??true);
         _ = knowledge.InitializeAsync();
-        session = new ChatSession(new Core.DeepSeekClient(secrets, knowledge: retrieval.RetrieveAsync, diagnostic:message=>Monitor.Log(message,LogLevel.Trace), cachedKnowledge:retrieval.TryCacheAsync, freshKnowledge:retrieval.RetrieveFreshAsync, uncachedKnowledge:retrieval.RetrieveUncachedAsync), queries, conversations, () => todos, screenCapture, new Vision.ScreenImageProcessor());
+        session = new ChatSession(new Core.DeepSeekClient(secrets, knowledge: retrieval.RetrieveAsync, diagnostic:message=>Monitor.Log(message,LogLevel.Trace), cachedKnowledge:retrieval.TryCacheAsync, freshKnowledge:retrieval.RetrieveFreshAsync, uncachedKnowledge:retrieval.RetrieveUncachedAsync, terminology:terminology), queries, conversations, () => todos, screenCapture, new Vision.ScreenImageProcessor());
         session.KeyConfigurationRequested += () => requestKeyConfiguration = true;
         if (string.IsNullOrWhiteSpace(config.Model) || config.Model.StartsWith("gpt-", StringComparison.OrdinalIgnoreCase))
             config.Model = "deepseek-flash";
         helper.WriteConfig(config);
         helper.Events.Input.ButtonsChanged += OnButtonsChanged;
         helper.Events.Input.ButtonPressed += OnButtonPressed;
-        helper.Events.Display.RenderedHud += (_, e) => hudButton.Draw(e.SpriteBatch);
+        helper.Events.Display.RenderedHud += (_, e) => { if (Context.ScreenId == 0 && !Context.IsSplitScreen) hudButton.Draw(e.SpriteBatch); };
         // With the assistant closed, a permitted recapture uses the next rendered game frame.
-        helper.Events.Display.Rendered += (_, e) => { if (!menuLayer.IsOpen) screenCapture.BeforeOverlay(e.SpriteBatch); };
-        helper.Events.Display.WindowResized += (_, e) => menuLayer.Resize(new Rectangle(0,0,e.OldSize.X,e.OldSize.Y),new Rectangle(0,0,Game1.uiViewport.Width,Game1.uiViewport.Height));
+        helper.Events.Display.Rendered += (_, e) => { if (Context.ScreenId == 0 && !menuLayer.IsOpen) screenCapture.BeforeOverlay(e.SpriteBatch); };
+        helper.Events.Display.WindowResized += (_, e) => { if (Context.ScreenId == 0) menuLayer.Resize(new Rectangle(0,0,e.OldSize.X,e.OldSize.Y),new Rectangle(0,0,Game1.uiViewport.Width,Game1.uiViewport.Height)); };
         helper.Events.GameLoop.UpdateTicked += OnUpdate;
-        helper.Events.GameLoop.SaveLoaded += (_, _) => BindConversation();
+        helper.Events.GameLoop.SaveLoaded += (_, _) => { terminologyDirty = true; BindConversation(); };
+        helper.Events.Content.AssetsInvalidated += (_, e) => {
+            if (e.NamesWithoutLocale.Any(n => n.Name.StartsWith("Strings/", StringComparison.OrdinalIgnoreCase)
+                || n.Name.StartsWith("Data/", StringComparison.OrdinalIgnoreCase))) terminologyDirty = true;
+        };
         helper.Events.GameLoop.DayStarted += (_, _) => BindConversation(onlyIfChanged: true);
-        helper.Events.GameLoop.ReturnedToTitle += (_, _) => { screenCapture.Cancel(); pendingOpen.Cancel(); menuLayer.Close(); menu?.Dispose(); menu = null; keyMenu?.Dispose(); keyMenu = null; requestKeyConfiguration = false; session.SwitchSave(null); todos = null; todoSaveKey = null; };
+        helper.Events.GameLoop.ReturnedToTitle += (_, _) => { if (Context.ScreenId == 0) UnbindConversation(); };
         helper.Events.GameLoop.GameLaunched += (_, _) =>
             GameRunner.instance.Exiting += (_, _) => { screenCapture.Cancel(); pendingOpen.Cancel(); menuLayer.Close(); menu?.Dispose(); keyMenu?.Dispose(); hudButton.Dispose(); session.SwitchSave(null); conversations.FlushOnExit(); };
-        helper.ConsoleCommands.Add("copilot_chat", "Open Stardew Copilot.", (_, _) => Open());
-        helper.ConsoleCommands.Add("codex_chat", "Open Stardew Copilot (legacy alias).", (_, _) => Open());
+        helper.ConsoleCommands.Add("copilot_chat", "Open Stardew Copilot.", (_, _) => Open(Keys.None));
+        helper.ConsoleCommands.Add("codex_chat", "Open Stardew Copilot (legacy alias).", (_, _) => Open(Keys.None));
         helper.ConsoleCommands.Add("copilot_check", "Check read-only game queries locally without sending data to DeepSeek.", (_, _) =>
         {
             foreach (var query in new[] { ("get_overview", "{}"), ("get_inventory", "{}"), ("get_quests", "{}"),
@@ -92,8 +100,8 @@ public sealed class ModEntry : Mod
 
     private void BindConversation(bool onlyIfChanged = false)
     {
-        if (!Context.IsWorldReady) return;
-        string key = $"{Constants.SaveFolderName ?? "farmhand"}:{Game1.uniqueIDForThisGame}:{Game1.player.UniqueMultiplayerID}";
+        if (!Context.IsWorldReady || Context.ScreenId != 0 || Context.IsSplitScreen) return;
+        string key = Core.PlayerSaveKey.Create(Constants.SaveFolderName, Game1.uniqueIDForThisGame, Game1.player.UniqueMultiplayerID);
         if (!onlyIfChanged || !session.IsBoundTo(key)) { pendingOpen.Cancel(); session.SwitchSave(key); }
         if (todoSaveKey != key)
         {
@@ -105,8 +113,9 @@ public sealed class ModEntry : Mod
     [EventPriority(EventPriority.High)]
     private void OnButtonPressed(object? sender, ButtonPressedEventArgs e)
     {
+        if (Context.ScreenId != 0 || Context.IsSplitScreen) return;
         if (e.IsSuppressed()) return;
-        if (e.Button == SButton.Enter && config.OpenChat.JustPressed() && CanOpen(Keys.Enter))
+        if (e.Button == SButton.Enter && OpenChatKey.JustPressed() && CanOpen(Keys.Enter))
         {
             Helper.Input.Suppress(SButton.Enter);
             Open();
@@ -122,17 +131,18 @@ public sealed class ModEntry : Mod
     [EventPriority(EventPriority.High)]
     private void OnButtonsChanged(object? sender, ButtonsChangedEventArgs e)
     {
+        if (Context.ScreenId != 0 || Context.IsSplitScreen) return;
         if (menuLayer.IsOpen)
         {
             foreach (SButton button in e.Pressed.Concat(e.Held))
                 if (button.TryGetKeyboard(out _)) Helper.Input.Suppress(button);
             return;
         }
-        if (!config.OpenChat.JustPressed()) return;
+        if (!OpenChatKey.JustPressed()) return;
         Keys trigger=e.Pressed.Select(button=>button.TryGetKeyboard(out var key)?key:Keys.None)
             .FirstOrDefault(key=>key is not (Keys.None or Keys.LeftControl or Keys.RightControl or Keys.LeftShift or Keys.RightShift or Keys.LeftAlt or Keys.RightAlt or Keys.LeftWindows or Keys.RightWindows));
         if (!CanOpen(trigger)) return;
-        Helper.Input.SuppressActiveKeybinds(config.OpenChat);
+        Helper.Input.SuppressActiveKeybinds(OpenChatKey);
         Open(trigger);
     }
 
@@ -174,10 +184,37 @@ public sealed class ModEntry : Mod
         }));
     }
 
-    private bool CanOpen(Keys trigger=Keys.Enter) => !pendingOpen.IsPending&&!menuLayer.IsOpen&&MenuOpenPolicy.CanOpen(trigger,allowOverMenu:trigger==Keys.Enter);
+    private bool CanOpen(Keys trigger=Keys.Enter) => !pendingOpen.IsPending&&!menuLayer.IsOpen&&MenuOpenPolicy.CanOpen(trigger,allowOverMenu:trigger==Keys.Enter||Context.IsMultiplayer);
+
+    private void UnbindConversation()
+    {
+        screenCapture.Cancel(); pendingOpen.Cancel(); menuLayer.Close();
+        menu?.Dispose(); menu = null; keyMenu?.Dispose(); keyMenu = null;
+        requestKeyConfiguration = false; session.SwitchSave(null); todos = null; todoSaveKey = null;
+    }
 
     private void OnUpdate(object? sender, UpdateTickedEventArgs e)
     {
+        if (Context.ScreenId != 0) return;
+        // Shared menu/IME services are not per-screen. Never let another local screen
+        // consume a queued request or bind the first player's private conversation.
+        if (Context.IsSplitScreen || !Context.IsWorldReady)
+        {
+            if (todoSaveKey != null || menuLayer.IsOpen || pendingOpen.IsPending) UnbindConversation();
+            queries.Tick();
+            return;
+        }
+        if (Context.IsWorldReady && (terminologyDirty || terminologyLanguage != LocalizedContentManager.CurrentLanguageCode))
+        {
+            terminologyDirty = false;
+            terminologyLanguage = LocalizedContentManager.CurrentLanguageCode;
+            try
+            {
+                terminology.Replace(State.GameTermReader.Read());
+                Monitor.Log($"GameTerminologyLoaded terms={terminology.Current.Count}", LogLevel.Trace);
+            }
+            catch (Exception error) { Monitor.Log($"游戏中文术语暂不可用：{error.GetType().Name}", LogLevel.Warn); }
+        }
         menuLayer.Tick();
         queries.Tick();
         session.Tick();

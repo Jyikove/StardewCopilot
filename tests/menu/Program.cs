@@ -13,7 +13,7 @@ void Reset()
     Game1.activeClickableMenu=null;Game1.isTimePaused=false;Game1.IsMultiplayer=false;Game1.options=new();
     Game1.keyboardDispatcher.Subscriber=null;Game1.chatBox.Active=false;Game1.currentMinigame=null;
     Game1.farmEvent=null;Game1.eventUp=false;Game1.Fading=false;Game1.showingEndOfNightStuff=false;
-    Context.IsWorldReady=true;Context.IsGameLaunched=true;
+    Context.IsWorldReady=true;Context.IsGameLaunched=true;Context.IsSplitScreen=false;Context.MultiplayerOverride=null;
 }
 Reset();
 var parent=new ShopMenu{HeldItems=37};Game1.activeClickableMenu=parent;
@@ -70,8 +70,35 @@ foreach(IClickableMenu menu in new IClickableMenu[]{new NamingMenu(),new NumberS
 }
 Reset();Game1.activeClickableMenu=new CustomKeyMenu();Check(!MenuOpenPolicy.CanOpen(Keys.Enter),"unknown custom keyboard handlers retain priority");
 Reset();Game1.activeClickableMenu=new InheritedShopMenu();Check(MenuOpenPolicy.CanOpen(Keys.Enter),"custom menus inheriting native key behavior remain supported");
-Reset();Game1.IsMultiplayer=true;Game1.activeClickableMenu=new ShopMenu();Check(!MenuOpenPolicy.CanOpen(Keys.Enter),"multiplayer retains the existing no-other-menu opening rule");
-Game1.activeClickableMenu=null;Check(MenuOpenPolicy.CanOpen(Keys.Enter),"multiplayer can still open the assistant from normal gameplay");
+foreach (bool host in new[]{true,false})
+{
+    Reset(); Game1.IsMultiplayer=true; Context.IsMainPlayer=host;
+    foreach(IClickableMenu native in new IClickableMenu[]{new ShopMenu(),new ItemGrabMenu(),new MapPage(),new QuestLog(),new GameMenu{Page=new MapPage()}})
+    {
+        Game1.activeClickableMenu=native;
+        Check(MenuOpenPolicy.CanOpen(Keys.G),"co-op compatible menu can open with G, host="+host+": "+native.GetType().Name);
+        var overlay=(Assistant)layer.Show(()=>new Assistant()); layer.Tick();
+        Check(ReferenceEquals(MenuLayer.Top(native),overlay)&&!Game1.isTimePaused,"co-op overlay keeps the original menu without pausing the world, host="+host);
+        overlay.Exit();
+        Check(ReferenceEquals(Game1.activeClickableMenu,native)&&native.GetChildMenu()==null&&!Game1.isTimePaused,"co-op close returns to the native menu, host="+host);
+    }
+    Game1.activeClickableMenu=null;
+    Check(!MenuOpenPolicy.CanOpen(Keys.Enter),"co-op reserves the game's chat binding, host="+host);
+    Check(MenuOpenPolicy.CanOpen(Keys.G),"co-op shortcut is available in the world, host="+host);
+    Game1.chatBox.Active=true;Check(!MenuOpenPolicy.CanOpen(Keys.G),"active player chat retains input, host="+host);
+    Game1.chatBox.Active=false;
+    Game1.activeClickableMenu=new BobberBar();Check(!MenuOpenPolicy.CanOpen(Keys.G),"ongoing co-op fishing cannot be suspended, host="+host);
+    foreach(IClickableMenu blocked in new IClickableMenu[]{new ReadyCheckDialog(),new SaveGameMenu(),new NamingMenu(),new ShippingMenu()})
+    {Game1.activeClickableMenu=blocked;Check(!MenuOpenPolicy.CanOpen(Keys.G),"co-op ready/save/confirmation menus keep controls: "+blocked.GetType().Name);}
+}
+Reset();Context.MultiplayerOverride=true; // a hosted co-op session before any peer joins
+layer.Show(()=>new Assistant());layer.Tick();
+Check(!Game1.IsMultiplayer&&!Game1.isTimePaused,"an empty co-op server does not acquire a single-player pause lease");layer.Close();
+Reset();Game1.IsMultiplayer=true;Game1.options.chatButton=new[]{new InputButton(Keys.T)};
+Check(MenuOpenPolicy.CanOpen(Keys.Enter)&&!MenuOpenPolicy.CanOpen(Keys.T),"co-op honors the actual chat binding rather than hardcoding Enter");
+Reset();Context.IsSplitScreen=true;Check(!MenuOpenPolicy.CanOpen(Keys.Enter)&&!MenuOpenPolicy.CanOpen(Keys.G),"unsupported split-screen cannot mix private assistant sessions");
+Reset();Game1.IsMultiplayer=true;
+Game1.activeClickableMenu=null;Check(MenuOpenPolicy.CanOpen(Keys.G),"multiplayer can open the assistant from normal gameplay");
 Reset();Context.IsWorldReady=false;Check(!MenuOpenPolicy.CanOpen(Keys.Enter),"title and load screens cannot open a save-bound assistant");
 Reset();Game1.currentMinigame=new();Check(!MenuOpenPolicy.CanOpen(Keys.Enter),"full-screen minigame controls keep keyboard ownership");
 Reset();Game1.Fading=true;Check(!MenuOpenPolicy.CanOpen(Keys.Enter),"scene fades cannot be interrupted by a new layer");
@@ -107,6 +134,14 @@ Reset();opening.Start("save-a",Keys.Enter,()=>Task.FromResult("test-credential")
 Check(!opening.TryComplete("save-a",out _),"a newly focused input retains keyboard ownership after the asynchronous check");
 Reset();opening.Start("save-a",Keys.Enter,()=>Task.FromResult("test-credential"));Context.IsWorldReady=false;
 Check(!opening.TryComplete("save-a",out _)&&!opening.IsPending,"leaving the save cannot display a late configuration or chat screen");
+Reset();Game1.IsMultiplayer=true;parent=new ShopMenu();Game1.activeClickableMenu=parent;
+opening.Start("farmhand",Keys.G,()=>Task.FromResult("test-credential"));
+Check(opening.TryComplete("farmhand",out configured)&&configured,"farmhand credential check completes over a compatible native menu");
+layer.Show(()=>new Assistant());layer.Close();
+Check(!Game1.isTimePaused&&ReferenceEquals(Game1.activeClickableMenu,parent),"farmhand key-to-chat handoff preserves native menu and never pauses");
+opening.Start("farmhand",Keys.G,()=>Task.FromResult("test-credential"));Game1.chatBox.Active=true;
+Check(!opening.TryComplete("farmhand",out _),"player chat opening during a key check cancels assistant focus acquisition");
+Reset();
 Console.WriteLine($"All {passed} menu-layer checks passed. No game save or network used.");
 
 sealed class Focus:IKeyboardSubscriber{public bool Selected{get;set;}}
@@ -122,7 +157,7 @@ sealed class InheritedShopMenu:ShopMenu{}
 
 namespace StardewModdingAPI
 {
-    public static class Context{public static bool IsWorldReady=true,IsGameLaunched=true;public static bool IsMultiplayer=>Game1.IsMultiplayer;}
+    public static class Context{public static bool IsWorldReady=true,IsGameLaunched=true,IsSplitScreen=false,IsMainPlayer=true;public static bool? MultiplayerOverride;public static bool IsMultiplayer=>MultiplayerOverride??Game1.IsMultiplayer;}
 }
 namespace StardewValley
 {
@@ -163,6 +198,7 @@ namespace StardewValley.Menus
     public sealed class QuestLog:IClickableMenu{}
     public sealed class DialogueBox:IClickableMenu{}
     public sealed class BobberBar:IClickableMenu{}
+    public sealed class ReadyCheckDialog:IClickableMenu{}
     public sealed class NamingMenu:IClickableMenu{}
     public sealed class NumberSelectionMenu:IClickableMenu{}
     public sealed class SaveGameMenu:IClickableMenu{}

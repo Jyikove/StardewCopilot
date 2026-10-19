@@ -34,6 +34,7 @@ using(var http=new HttpClient(new Handler(async request=>{using var body=JsonDoc
  Check(answer=="画面是背包。"&&capture.Count==1&&processor.Previews==1&&processor.Crops.Count==0&&requests.Count==1,"clear preview can answer immediately without mandatory crop or second request");
  Check(requests[0].GetProperty("model").GetString()=="deepseek-flash"&&ImageUrls(requests[0]).Single().EndsWith(Convert.ToBase64String(new byte[]{1,1})),"preview is sent as documented inline PNG image_url with the supported model");
  Check(requests[0].GetProperty("messages").GetArrayLength()==2&&!HasTool(requests[0],"add_todo"),"screen requests do not include historical dialog or write tools");
+ Check(requests[0].GetProperty("messages")[0].GetProperty("content").GetString()!.Split(AssistantPersona.Voice).Length==2,"screen serialized request uses shared persona once without altering vision tools");
 }
 capture=new(original);processor=new();requests.Clear();
 using(var http=new HttpClient(new Handler(async request=>{using var body=JsonDocument.Parse(await request.Content!.ReadAsStringAsync());requests.Add(body.RootElement.Clone());return requests.Count==1?Tool("screen_crop","{\"regions\":[{\"x\":0.1,\"y\":0.1,\"width\":0.2,\"height\":0.2},{\"x\":0.6,\"y\":0.6,\"width\":0.2,\"height\":0.2}]}"):Answer();})))
