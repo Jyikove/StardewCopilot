@@ -167,8 +167,13 @@ foreach (var (w,h,name) in new[]{(1280,720,"chat"),(640,480,"compact"),(960,600,
         void Assert(bool ok,string label){if(!ok)throw new Exception(label);Console.WriteLine("PASS HELP UI: "+label);}
         var flags=System.Reflection.BindingFlags.NonPublic|System.Reflection.BindingFlags.Instance;
         var rows=(System.Collections.IList)typeof(ChatMenu).GetField("helpLines",flags)!.GetValue(menu)!;
-        Assert(rows.Count>0 && rows.Cast<object>().Count(r=>(bool)r.GetType().GetProperty("Bold")!.GetValue(r)!)==6,"six help headings have a native bold style");
+        Assert(rows.Count>0 && rows.Cast<object>().Count(r=>(bool)r.GetType().GetProperty("Bold")!.GetValue(r)!)==5,"five help headings have a native bold style");
         Assert(!rows.Cast<object>().Any(r=>((string)r.GetType().GetProperty("Text")!.GetValue(r)!).Contains("**")),"help content contains no Markdown bold markers");
+        var hits=(List<(Rectangle Bounds,string Url)>)typeof(ChatMenu).GetField("helpHits",flags)!.GetValue(menu)!;
+        Assert(hits.Any(h=>h.Url=="#特殊指令"),"document section references become native clickable anchors");
+        var anchor=hits.First(h=>h.Url=="#特殊指令");menu.receiveLeftClick(anchor.Bounds.Center.X,anchor.Bounds.Center.Y);
+        Assert((int)typeof(ChatMenu).GetField("helpScroll",flags)!.GetValue(menu)!>0,"clicking a section reference scrolls to the command section");
+        typeof(ChatMenu).GetField("helpScroll",flags)!.SetValue(menu,0);menu.draw(new SpriteBatch(canvas));
         string draft=session.Draft.Text;
         typeof(ChatMenu).GetMethod("HandleKey",flags)!.Invoke(menu,new object[]{new StardewCodexChat.Input.TextEvent(0x300,"",0,8,false)});
         Assert(session.Draft.Text==draft && session.Sends==0,"help page does not edit or submit the hidden chat draft");
@@ -295,7 +300,7 @@ namespace StardewCodexChat.UI {
  internal class HighResolutionFont:IDisposable {
   public HighResolutionFont(object d){} public void SetDensity(float d){} public void BeginFrame(){}public void Dispose(){}
   internal static SKPaint Paint(float scale,bool bold=false)=>new(){Typeface=SKTypeface.FromFamilyName("PingFang SC",bold?SKFontStyle.Bold:SKFontStyle.Normal),TextSize=20*scale,IsAntialias=true,SubpixelText=true};
-  public Vector2 Measure(string text,float scale,bool bold=false){using var p=Paint(scale,bold);return new(p.MeasureText(text),p.FontSpacing);}
-  public void Draw(SpriteBatch b,string t,float x,float y,Color c,float s,bool bold=false)=>b.Text(t,x,y,c,s,bold);
+  public Vector2 Measure(string text,float scale,bool bold=false,bool code=false){using var p=Paint(scale,bold);return new(p.MeasureText(text),p.FontSpacing);}
+  public void Draw(SpriteBatch b,string t,float x,float y,Color c,float s,bool bold=false,bool code=false)=>b.Text(t,x,y,c,s,bold);
  }
 }

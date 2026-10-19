@@ -22,6 +22,8 @@ cp src/bin/Release/net6.0/HtmlAgilityPack.dll dist/StardewCopilot/
 cp src/manifest.json dist/StardewCopilot/
 cp README.md dist/StardewCopilot/
 cp TESTING.md dist/StardewCopilot/
+cp INSTALL.txt dist/StardewCopilot/
+cp THIRD-PARTY-NOTICES.txt dist/StardewCopilot/
 rm -f dist/StardewCopilot/StardewCopilotKeySetup "dist/StardewCopilot/配置 DeepSeek Key.command"
 echo "Built: $(pwd)/dist/StardewCopilot"
 if [[ "$build_package" == true ]]; then

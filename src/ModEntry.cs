@@ -48,7 +48,7 @@ public sealed class ModEntry : Mod
         var retrieval = new Knowledge.KnowledgeRouter(knowledge,broad,config.Knowledge?.EnableBroadWeb??true);
         _ = knowledge.InitializeAsync();
         modEnvironment = new Core.ModEnvironment(retrieval.RetrieveAsync, message => Monitor.Log(message, LogLevel.Trace));
-        RefreshModInventory();
+
         session = new ChatSession(new Core.DeepSeekClient(secrets, knowledge: retrieval.RetrieveAsync, diagnostic:message=>Monitor.Log(message,LogLevel.Trace), cachedKnowledge:retrieval.TryCacheAsync, freshKnowledge:retrieval.RetrieveFreshAsync, uncachedKnowledge:retrieval.RetrieveUncachedAsync, terminology:terminology, modEnvironment:modEnvironment), queries, conversations, () => todos, screenCapture, new Vision.ScreenImageProcessor());
         session.KeyConfigurationRequested += () => requestKeyConfiguration = true;
         if (string.IsNullOrWhiteSpace(config.Model) || config.Model.StartsWith("gpt-", StringComparison.OrdinalIgnoreCase))
@@ -68,6 +68,7 @@ public sealed class ModEntry : Mod
         };
         helper.Events.GameLoop.DayStarted += (_, _) => BindConversation(onlyIfChanged: true);
         helper.Events.GameLoop.ReturnedToTitle += (_, _) => { if (Context.ScreenId == 0) UnbindConversation(); };
+        helper.Events.GameLoop.GameLaunched += (_, _) => { RefreshModInventory(); };
         helper.Events.GameLoop.GameLaunched += (_, _) =>
             GameRunner.instance.Exiting += (_, _) => { screenCapture.Cancel(); pendingOpen.Cancel(); menuLayer.Close(); menu?.Dispose(); keyMenu?.Dispose(); hudButton.Dispose(); session.SwitchSave(null); conversations.FlushOnExit(); };
         helper.ConsoleCommands.Add("copilot_chat", "Open Stardew Copilot.", (_, _) => Open(Keys.None));
@@ -95,12 +96,13 @@ public sealed class ModEntry : Mod
     {
         try
         {
+            var directories = Core.ModDirectoryIndex.Discover(Path.GetDirectoryName(Helper.DirectoryPath)!);
             var snapshot = Helper.ModRegistry.GetAll().Select(mod => new Core.ModDescriptor(
                 mod.Manifest.UniqueID,
                 mod.Manifest.Name,
                 mod.Manifest.Version.ToString(),
                 Helper.ModRegistry.IsLoaded(mod.Manifest.UniqueID),
-                mod.DirectoryPath,
+                directories.GetValueOrDefault(mod.Manifest.UniqueID, ""),
                 mod.Manifest.Author ?? "",
                 mod.Manifest.Description ?? "",
                 mod.Manifest.EntryDll ?? "")).ToArray();

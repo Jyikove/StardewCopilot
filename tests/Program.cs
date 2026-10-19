@@ -1206,6 +1206,71 @@ using (var dailyHttp = new HttpClient(new StubHandler(async (request, token) => 
     Check(answer.Contains("60格") && !answer.StartsWith("老大，老大"), "fixture response is passed through without an added persona wrapper");
 }
 
+// Never display or execute DSML-looking tool calls emitted as ordinary text.
+foreach(bool streaming in new[]{true,false})
+foreach(string marker in new[]{"<｜DSML｜calls>","< | D S M L | calls>"})
+{
+    int recoveryRounds=0;var recoveryGame=new FakeGameQueries();var visible=new StringBuilder();
+    using var recoveryHttp=new HttpClient(new StubHandler(async(req,token)=>{
+        using var doc=JsonDocument.Parse(await req.Content!.ReadAsStringAsync(token));
+        if(++recoveryRounds==1)
+        {
+            string leaked=marker+"<invoke name=\"add_todo\">不应保存的任务</invoke>";
+            return streaming?StreamAnswer(string.Concat(leaked.Select(c=>Event(c.ToString())))+End()):Answer(leaked);
+        }
+        Check(!doc.RootElement.TryGetProperty("tools",out _)&&doc.RootElement.GetProperty("tool_choice").GetString()=="none","protocol recovery disables all tools");
+        return streaming?StreamAnswer(Event("今天先处理快到期的任务，余下时间按体力安排。")+End()):Answer("今天先处理快到期的任务，余下时间按体力安排。");
+    }));
+    string result=await new DeepSeekClient(new FakeSecret(dummyKey),recoveryHttp).AskAsync(options,new Conversation().BuildMessages("今天要做什么？"),default,streaming?t=>visible.Append(t):null,recoveryGame);
+    Check(recoveryRounds==2&&!result.Contains("DSML")&&!visible.ToString().Contains("DSML")&&!result.Contains("invoke"),"split or JSON internal markup is withheld and replaced by a recovered final answer");
+    Check(!recoveryGame.Calls.Any(c=>c.StartsWith("add_todo")),"textual add_todo markup is never interpreted as a real tool call");
+}
+int lateProtocolRound=0;var lateProtocolGame=new FakeGameQueries();
+using(var lateProtocolHttp=new HttpClient(new StubHandler(async(req,token)=>{
+    using var doc=JsonDocument.Parse(await req.Content!.ReadAsStringAsync(token));
+    if(++lateProtocolRound==1)return StreamAnswer(ToolChunk(Enumerable.Range(0,8).Select(i=>(object)new{index=i,id="quota-"+i,type="function",function=new{name="get_inventory",arguments="{}"}}).ToArray())+End("tool_calls"));
+    Check(doc.RootElement.GetProperty("tool_choice").GetString()=="none"&&!doc.RootElement.TryGetProperty("tools",out _),"quota synthesis and protocol recovery both keep tools disabled");
+    return StreamAnswer(Event(lateProtocolRound==2?"<｜DSML｜calls>bad":"先把快到期的订单处理好哦。")+End());
+})))
+{
+    string answer=await new DeepSeekClient(new FakeSecret(dummyKey),lateProtocolHttp).AskAsync(options,new Conversation().BuildMessages("今天要做什么？"),default,_=>{},lateProtocolGame);
+    Check(lateProtocolRound==3&&answer.Contains("订单")&&!answer.Contains("DSML"),"protocol leakage in the tool-free quota round still recovers a useful final answer");
+}
+int persistentProtocolRounds=0;
+using(var brokenProtocolHttp=new HttpClient(new StubHandler((_,_)=>{persistentProtocolRounds++;return Task.FromResult(Answer("<｜DSML｜calls>bad"));})))
+{
+    var failure=await Failure(()=>new DeepSeekClient(new FakeSecret(dummyKey),brokenProtocolHttp).AskAsync(options,new Conversation().BuildMessages("你好"),default,null,new FakeGameQueries()));
+    Check(persistentProtocolRounds==2&&!failure.Message.Contains("DSML"),"repeated protocol failure is bounded to one retry with a plain player-facing error");
+}
+
+// Mod config discovery/value retrieval must complete through real DeepSeek tool messages.
+string modProtocolRoot=Path.Combine(OperatingSystem.IsMacOS()?"/private/tmp":Path.GetTempPath(),"copilot-mod-protocol-"+Guid.NewGuid());
+Directory.CreateDirectory(modProtocolRoot);
+try
+{
+    await File.WriteAllTextAsync(Path.Combine(modProtocolRoot,"config.json"),"{\"LookupKey\":\"F9\",\"ApiKey\":\"synthetic-secret\"}");
+    var modEnv=new ModEnvironment();modEnv.ReplaceMods(new[]{new ModDescriptor("Fixture.Lookup","Fixture Lookup","1",true,modProtocolRoot)});
+    int modRound=0;
+    using var modHttp=new HttpClient(new StubHandler(async(req,token)=>{
+        using var doc=JsonDocument.Parse(await req.Content!.ReadAsStringAsync(token));var body=doc.RootElement;
+        var wire=body.GetProperty("messages");
+        Check(!wire.ToString().Contains(modProtocolRoot)&&!wire.ToString().Contains("synthetic-secret"),"Mod protocol never transmits local directories or filtered secret values");
+        if(++modRound<=2)
+        {
+            Check(body.GetProperty("tools").GetArrayLength()==13&&body.GetProperty("tool_choice").GetString()=="auto","Mod questions advertise the extended tools without forcing game Wiki lookup");
+            string args=modRound==1?"{\"unique_id\":\"Fixture.Lookup\"}":"{\"unique_id\":\"Fixture.Lookup\",\"fields\":[\"LookupKey\",\"ApiKey\"]}";
+            if(modRound==2)Check(wire[wire.GetArrayLength()-1].GetProperty("content").GetString()!.Contains("available_fields"),"field discovery result is paired back to the model");
+            return StreamAnswer(ToolChunk(new object[]{new{index=0,id="mod-call-"+modRound,type="function",function=new{name="get_mod_config",arguments=args}}})+End("tool_calls"));
+        }
+        Check(wire[wire.GetArrayLength()-1].GetProperty("content").GetString()!.Contains("F9"),"selected saved keybind reaches the final answer round");
+        return StreamAnswer(Event("保存的查询快捷键是F9，运行时是否生效尚未核实。")+End());
+    }));
+    string modReply=await new DeepSeekClient(new FakeSecret(dummyKey),modHttp,knowledge:(_,_)=>throw new Exception("Mod config must not force Wiki"),modEnvironment:modEnv)
+        .AskAsync(options,new Conversation().BuildMessages("Fixture Lookup 快捷键是什么？"),default,_=>{},new FakeGameQueries());
+    Check(modRound==3&&modReply.Contains("F9"),"ordinary Mod config question completes discovery, value read and streamed answer");
+}
+finally {Directory.Delete(modProtocolRoot,true);}
+
 // Independent client sessions on the same farm; shared directory is stricter than separate computers.
 string coopRoot=Path.Combine(Path.GetTempPath(),"copilot-coop-"+Guid.NewGuid());
 try

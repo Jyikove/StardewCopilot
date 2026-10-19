@@ -10,9 +10,10 @@ internal sealed class HighResolutionFont : IDisposable
     private readonly GraphicsDevice device;
     private readonly SKTypeface typeface;
     private readonly SKTypeface boldTypeface;
+    private readonly SKTypeface codeTypeface;
     private readonly SKPaint paint;
-    private readonly Dictionary<(string Text, float Scale, bool Bold), Texture2D> cache = new();
-    private readonly Queue<(string Text, float Scale, bool Bold)> order = new();
+    private readonly Dictionary<(string Text, float Scale, bool Bold, bool Code), Texture2D> cache = new();
+    private readonly Queue<(string Text, float Scale, bool Bold, bool Code)> order = new();
     private readonly List<Texture2D> retired = new();
     private int pixels;
     private float density = 2;
@@ -26,6 +27,7 @@ internal sealed class HighResolutionFont : IDisposable
             ?? SKTypeface.FromFile("/System/Library/Fonts/Hiragino Sans GB.ttc")
             ?? throw new InvalidOperationException("无法加载 macOS 中文字体。");
         boldTypeface = SKTypeface.FromFamilyName("PingFang SC", SKFontStyle.Bold) ?? typeface;
+        codeTypeface = SKTypeface.FromFamilyName("Menlo", SKFontStyle.Normal) ?? typeface;
         paint = new SKPaint {
             Typeface = typeface, IsAntialias = true, SubpixelText = true,
             LcdRenderText = false, Color = SKColors.White
@@ -40,11 +42,18 @@ internal sealed class HighResolutionFont : IDisposable
         density = value;
     }
 
-    internal Vector2 Measure(string text, float scale, bool bold = false)
+    // All faces share the Chinese font's baseline, including Menlo code runs.
+    private SKFontMetrics SelectFont(string text,float size,bool bold,bool code)
     {
-        paint.Typeface = bold ? boldTypeface : typeface;
-        paint.TextSize = BaseSize * scale;
-        return new Vector2(paint.MeasureText(text), paint.FontSpacing);
+        paint.TextSize=size;paint.Typeface=typeface;
+        var metrics=paint.FontMetrics;
+        paint.Typeface=code&&text.All(c=>c<128)?codeTypeface:bold?boldTypeface:typeface;
+        return metrics;
+    }
+    internal Vector2 Measure(string text, float scale, bool bold = false, bool code = false)
+    {
+        var metrics=SelectFont(text,BaseSize*scale,bold,code);
+        return new Vector2(paint.MeasureText(text),metrics.Descent-metrics.Ascent+metrics.Leading);
     }
 
     internal void BeginFrame()
@@ -53,11 +62,9 @@ internal sealed class HighResolutionFont : IDisposable
         retired.Clear();
     }
 
-    internal SKBitmap Rasterize(string text, float scale, bool bold = false)
+    internal SKBitmap Rasterize(string text, float scale, bool bold = false, bool code = false)
     {
-        paint.Typeface = bold ? boldTypeface : typeface;
-        paint.TextSize = BaseSize * scale * density;
-        var metrics = paint.FontMetrics;
+        var metrics=SelectFont(text,BaseSize*scale*density,bold,code);
         int width = Math.Max(1, (int)Math.Ceiling(paint.MeasureText(text) + 4 * density));
         int height = Math.Max(1, (int)Math.Ceiling(metrics.Descent - metrics.Ascent + 4 * density));
         var bitmap = new SKBitmap(new SKImageInfo(width, height, SKColorType.Rgba8888, SKAlphaType.Premul));
@@ -68,13 +75,13 @@ internal sealed class HighResolutionFont : IDisposable
         return bitmap;
     }
 
-    internal void Draw(SpriteBatch batch, string text, float x, float y, Color color, float scale, bool bold = false)
+    internal void Draw(SpriteBatch batch, string text, float x, float y, Color color, float scale, bool bold = false, bool code = false)
     {
         if (string.IsNullOrEmpty(text)) return;
-        var key = (text, scale, bold);
+        var key = (text, scale, bold, code);
         if (!cache.TryGetValue(key, out Texture2D? texture))
         {
-            using var bitmap = Rasterize(text, scale, bold);
+            using var bitmap = Rasterize(text, scale, bold, code);
             int width = bitmap.Width, height = bitmap.Height;
             while (order.Count > 0 && (pixels + width * height > MaxCachePixels || cache.Count >= 256))
             {
@@ -99,5 +106,5 @@ internal sealed class HighResolutionFont : IDisposable
         cache.Clear(); order.Clear(); pixels = 0;
     }
 
-    public void Dispose() { ClearTextures(); paint.Dispose(); if (!ReferenceEquals(typeface, boldTypeface)) boldTypeface.Dispose(); typeface.Dispose(); }
+    public void Dispose() { ClearTextures(); paint.Dispose(); if(!ReferenceEquals(typeface,codeTypeface))codeTypeface.Dispose(); if (!ReferenceEquals(typeface, boldTypeface)) boldTypeface.Dispose(); typeface.Dispose(); }
 }

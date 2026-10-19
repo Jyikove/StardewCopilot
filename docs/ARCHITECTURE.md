@@ -71,3 +71,5 @@ tools/         手动分享包的白名单打包脚本
 普通客户端自行请求 DeepSeek；不使用 SMAPI Mod 消息或房主代理，不要求所有玩家安装。OpenChatMultiplayer 默认为 G，保留原生聊天绑定；兼容的原生菜单仍使用 child-menu 叠加。暂停依据 Context.IsMultiplayer（包含尚无其他玩家的联机房间），不使用依赖 otherFarmers.Count 的 Game1.IsMultiplayer。
 
 PlayerSaveKey 保持旧磁盘键格式，由存档标识、世界 ID、本机 Farmer ID 组成。StateReader 始终读取 Game1.player；农场工遍历地点时筛除 IsActiveLocation 为 false 的区域，但保留实际当前地点，并提供同步范围说明。客户端未载入世界、断线或返回标题时解除会话绑定并取消待处理请求。共享的菜单/IME/会话服务未改成 PerScreen，因此同机分屏关闭入口与处理，其他屏幕不推进查询或替换绑定。
+
+Mod 目录定位使用有界的本地 manifest 扫描（以助手安装目录的父目录为起点，最多 1000 个目录/5 层），与 SMAPI 已加载的 UniqueID 匹配；不使用 IModInfo 不存在的 DirectoryPath，也不依赖内部反射。目录缺失或 ID 重复不授予配置读取权限；符号链接目录/文件被拒绝。配置读取只针对已匹配目录的 config.json，读取本身限制在 256 KiB 内，异常以无内容错误返回。未知凭据命名无法由通用过滤器完全识别，新增敏感命名仍需维护规则；这些工具不是对恶意 Mod 进程的隔离沙箱。

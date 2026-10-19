@@ -116,7 +116,7 @@ public sealed class ModEnvironment : IModEnvironment
         var snapshot = current
             .Where(m => !string.IsNullOrWhiteSpace(m.UniqueId)
                 && !string.IsNullOrWhiteSpace(m.Name)
-                && !string.IsNullOrWhiteSpace(m.DirectoryPath))
+)
             .GroupBy(m => m.UniqueId.Trim(), StringComparer.OrdinalIgnoreCase)
             .Select(g => g.First() with
             {
@@ -186,13 +186,14 @@ public sealed class ModEnvironment : IModEnvironment
         token.ThrowIfCancellationRequested();
         try
         {
-            return name switch
+            string result = name switch
             {
                 "get_mod_details" => GetDetails(arguments),
                 "get_mod_config" => await GetConfigAsync(arguments, token),
                 "search_mod_docs" => await SearchDocsAsync(arguments, token),
                 _ => Error("Unsupported Mod tool.")
             };
+            return result.Length <= MaxToolResultChars ? result : Error("Mod tool result exceeded the local limit.");
         }
         catch (OperationCanceledException) when (token.IsCancellationRequested) { throw; }
         catch (Exception error)
@@ -257,8 +258,14 @@ public sealed class ModEnvironment : IModEnvironment
             return Error("The Mod config file is a symbolic link or reparse point and was not read.");
         var info = new FileInfo(path);
         if (info.Length > MaxConfigBytes) return Error("The Mod config.json exceeds the local read limit.");
-        string text = await File.ReadAllTextAsync(path, token);
-        using var config = JsonDocument.Parse(text, new JsonDocumentOptions { MaxDepth = 16 });
+        // The file may grow after the length check. Never allocate/read beyond the cap.
+        await using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite, 4096, true);
+        byte[] bytes = new byte[MaxConfigBytes + 1];
+        int count = 0, read;
+        while (count < bytes.Length && (read = await stream.ReadAsync(bytes.AsMemory(count), token)) != 0) count += read;
+        if (count > MaxConfigBytes) return Error("The Mod config.json exceeds the local read limit.");
+        string text = System.Text.Encoding.UTF8.GetString(bytes, 0, count).TrimStart('\uFEFF');
+        using var config = JsonDocument.Parse(text, new JsonDocumentOptions { MaxDepth = 16, CommentHandling = JsonCommentHandling.Skip, AllowTrailingCommas = true });
         if (config.RootElement.ValueKind != JsonValueKind.Object)
             return Error("The Mod config root is not a JSON object.");
 
@@ -426,7 +433,10 @@ public sealed class ModEnvironment : IModEnvironment
         path = "";
         try
         {
+            if (string.IsNullOrWhiteSpace(mod.DirectoryPath)) return false;
             string root = Path.GetFullPath(mod.DirectoryPath);
+            for (var directory = new DirectoryInfo(root); directory != null; directory = directory.Parent)
+                if ((directory.Attributes & FileAttributes.ReparsePoint) != 0) return false;
             string prefix = root.EndsWith(Path.DirectorySeparatorChar.ToString(), StringComparison.Ordinal)
                 ? root : root + Path.DirectorySeparatorChar;
             string candidate = Path.GetFullPath(Path.Combine(root, "config.json"));
@@ -492,7 +502,15 @@ public sealed class ModEnvironment : IModEnvironment
                 return result;
             }
             case JsonValueKind.String:
-                return TrimTo(value.GetString() ?? "", 500);
+                string text = value.GetString() ?? "";
+                if (Path.IsPathFullyQualified(text) || Regex.IsMatch(text, @"sk-[A-Za-z0-9_-]{16,}|gh[pousr]_[A-Za-z0-9]{20,}|Bearer\s+\S+", RegexOptions.IgnoreCase))
+                    return "[sensitive value omitted]";
+                if (Uri.TryCreate(text, UriKind.Absolute, out var uri) && (uri.Scheme == "https" || uri.Scheme == "http"))
+                {
+                    if (uri.UserInfo.Length > 0 || uri.Query.TrimStart('?').Split('&').Any(part => IsSensitiveField(Uri.UnescapeDataString(part.Split('=')[0]))))
+                        return "[sensitive value omitted]";
+                }
+                return TrimTo(text, 500);
             case JsonValueKind.Number:
             case JsonValueKind.True:
             case JsonValueKind.False:
@@ -516,7 +534,10 @@ public sealed class ModEnvironment : IModEnvironment
             || value.Contains("authorization", StringComparison.Ordinal)
             || value.Contains("cookie", StringComparison.Ordinal)
             || value.Contains("privatekey", StringComparison.Ordinal)
-            || value == "token";
+            || value.Contains("token", StringComparison.Ordinal)
+            || value.Contains("passwd", StringComparison.Ordinal)
+            || value.Contains("密钥", StringComparison.Ordinal)
+            || value.Contains("密码", StringComparison.Ordinal);
     }
 
     private static string GetString(JsonElement root, string name) =>

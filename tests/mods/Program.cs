@@ -9,7 +9,7 @@ void Check(bool condition, string name)
     passed++;
 }
 
-string root = Path.Combine(Path.GetTempPath(), "stardew-copilot-mod-test-" + Guid.NewGuid().ToString("N"));
+string root = Path.Combine(OperatingSystem.IsMacOS() ? "/private/tmp" : Path.GetTempPath(), "stardew-copilot-mod-test-" + Guid.NewGuid().ToString("N"));
 string modPath = Path.Combine(root, "LookupAnything");
 Directory.CreateDirectory(modPath);
 try
@@ -120,6 +120,34 @@ try
     string unknown = await environment.ExecuteAsync("get_mod_details", """{"unique_id":"Unknown.Mod"}""", default);
     Check(unknown.Contains("error"), "unknown Mod IDs cannot access local files");
 
+    async Task<string> Read(string fields="[\"LookupKey\"]") => await environment.ExecuteAsync("get_mod_config", "{\"unique_id\":\"Pathoschild.LookupAnything\",\"fields\":"+fields+"}",default);
+    string configPath=Path.Combine(modPath,"config.json");
+    await File.WriteAllTextAsync(configPath,"{ // SMAPI-style comment\n\"LookupKey\":\"F8\", }");
+    Check((await Read()).Contains("F8"),"config supports comments/trailing commas and reads updated values");
+    foreach(string bad in new[]{"{broken", "[]", new string(' ',ModEnvironment.MaxConfigBytes+1), new string('[',20)+new string(']',20)})
+    {await File.WriteAllTextAsync(configPath,bad);Check((await Read()).Contains("error"),"malformed, deep or oversized configs return bounded errors");}
+    await File.WriteAllTextAsync(configPath,"{\"DiscordToken\":\"not-public\",\"密码\":\"not-public\",\"Endpoint\":\"https://example.com/?api_key=not-public\",\"Folder\":\"/private/local-folder\"}");
+    string protectedValues=await Read("[\"DiscordToken\",\"密码\",\"Endpoint\",\"Folder\"]");
+    Check(!protectedValues.Contains("not-public")&&!protectedValues.Contains("/private/local-folder"),"additional tokens, Chinese credentials, URL credentials and absolute paths are withheld");
+    File.Delete(configPath);
+    string external=Path.Combine(root,"outside.json");await File.WriteAllTextAsync(external,"{\"LookupKey\":\"EXTERNAL\"}");
+    File.CreateSymbolicLink(configPath,external);
+    Check(!(await Read()).Contains("EXTERNAL")&&(await Read()).Contains("error"),"config file symlinks cannot escape the Mod boundary");
+    File.Delete(configPath);
+    string linked=Path.Combine(root,"linked-mod");Directory.CreateSymbolicLink(linked,modPath);
+    await File.WriteAllTextAsync(configPath,"{\"LookupKey\":\"EXTERNAL\"}");
+    environment.ReplaceMods(new[]{new ModDescriptor("Pathoschild.LookupAnything","Lookup Anything","1",true,linked)});
+    Check((await Read()).Contains("error"),"symlink Mod directories are also rejected");
+    environment.ReplaceMods(new[]{new ModDescriptor("Pathoschild.LookupAnything","Lookup Anything","1",true,"")});
+    Check(environment.InventoryJson.Contains("Pathoschild.LookupAnything")&&(await Read()).Contains("error"),"unknown paths preserve manifest discovery without granting config access");
+    await File.WriteAllTextAsync(Path.Combine(modPath,"manifest.json"),"{\"UniqueID\":\"Pathoschild.LookupAnything\"}");
+    Check(ModDirectoryIndex.Discover(root).GetValueOrDefault("Pathoschild.LookupAnything")==modPath,"public manifest discovery resolves directories without internal SMAPI APIs or following links");
+    string duplicate=Path.Combine(root,"duplicate");Directory.CreateDirectory(duplicate);
+    await File.WriteAllTextAsync(Path.Combine(duplicate,"manifest.json"),"{\"UniqueID\":\"Pathoschild.LookupAnything\"}");
+    Check(!ModDirectoryIndex.Discover(root).ContainsKey("Pathoschild.LookupAnything"),"ambiguous duplicate IDs cannot grant config access to the wrong folder");
+    using var canceled=new CancellationTokenSource();canceled.Cancel();
+    bool cancellationObserved=false;try{await environment.ExecuteAsync("get_mod_config","{}",canceled.Token);}catch(OperationCanceledException){cancellationObserved=true;}
+    Check(cancellationObserved,"cancellation is propagated rather than converted to a successful tool result");
     Console.WriteLine($"All {passed} Mod tool checks passed. Temporary synthetic data only; no network or real configuration used.");
 }
 finally

@@ -1,0 +1,43 @@
+Stardew Copilot 1.0
+作者：Jyikove
+
+安装条件
+仅支持 macOS。
+请先安装 Stardew Valley 1.6.15 和 SMAPI 4.5.2。
+SMAPI 官方下载：https://smapi.io/
+需要自己的 DeepSeek API Key、网络连接及可用账户额度。
+不需要安装 Xcode、.NET SDK、Codex CLI 或额外的 Mod 前置。
+
+安装方法
+1. 正常保存并完全退出游戏。
+2. 解压 StardewCopilot-1.0.0-macOS.zip。
+3. 把解压得到的整个 StardewCopilot 文件夹放进游戏的 Mods 文件夹。
+   正确结构：Mods/StardewCopilot/manifest.json
+   同一个文件夹中应有 StardewCopilot.dll、HtmlAgilityPack.dll 等文件。
+4. 使用安装 SMAPI 时配置好的游戏入口启动游戏，确认出现 SMAPI 控制台。
+5. 进入存档，按 Enter（联机按 G）或点击能量条上方的对话按钮。
+6. 第一次打开时，输入您自己的 DeepSeek API Key 并确认，之后即可提问。
+
+Steam 常见游戏目录
+在 Steam 库中右键点击 Stardew Valley，选择“管理”→“浏览本地文件”。
+找到 Contents/MacOS/Mods，把 StardewCopilot 放进去。
+如果没有 Mods 文件夹，请先检查 SMAPI 是否已安装到这份游戏中。
+
+使用方法
+Enter 发送，Shift+Enter 换行，Esc 关闭窗口。
+“帮助”页有完整说明；空输入框输入 / 可查看特殊指令。
+未配置 Key、网络不可用或账户额度不足时，无法调用 AI。
+游戏内只读查询；助手不会代替您浇水、收获、送礼或修改存档。
+联机不会强制暂停世界；暂不支持同机分屏或 Windows。
+
+更新与隐私
+更新前退出游戏，用新版文件覆盖原 Mod 程序文件。
+保留自己已有的 config.json、secrets.json、.credential-key 和 data 文件夹。
+分享给朋友时请使用原始下载 ZIP，不要复制您使用过的 Mod 文件夹。
+原始 ZIP 不含作者的 Key、配置、存档、聊天、待办、截图或网页缓存。
+
+遇到问题
+先确认游戏和 SMAPI 版本、目录层级，以及是否使用 SMAPI 启动。
+若快捷键被其他功能占用，可使用右下角按钮打开助手。
+反馈地址：https://github.com/Jyikove/StardewCopilot/issues
+反馈日志前请遮去个人信息，切勿上传凭据文件或 API Key。

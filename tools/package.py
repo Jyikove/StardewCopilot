@@ -7,9 +7,9 @@ import zipfile
 source = Path(sys.argv[1]).resolve()
 output = Path(sys.argv[2]).resolve()
 output.parent.mkdir(parents=True, exist_ok=True)
-names = ("StardewCopilot.dll", "HtmlAgilityPack.dll", "manifest.json", "README.md", "TESTING.md")
+names = ("StardewCopilot.dll", "HtmlAgilityPack.dll", "manifest.json", "README.md", "TESTING.md", "INSTALL.txt", "THIRD-PARTY-NOTICES.txt")
 for name in names:
-    if not (source / name).is_file():
+    if not (source / name).is_file() or (source / name).is_symlink():
         raise SystemExit(f"Missing required distribution file: {name}")
 with tempfile.NamedTemporaryFile(dir=output.parent, suffix=".zip", delete=False) as handle:
     temporary = Path(handle.name)
@@ -19,5 +19,6 @@ try:
             path = source / name
             archive.write(path, path.relative_to(source.parent))
     temporary.replace(output)
+    output.chmod(0o644)
 finally:
     temporary.unlink(missing_ok=True)

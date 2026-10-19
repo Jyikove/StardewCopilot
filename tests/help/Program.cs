@@ -1,0 +1,21 @@
+using StardewCodexChat.Core;
+using StardewCodexChat.UI;
+int passed=0;
+void Check(bool ok,string name){if(!ok)throw new Exception(name);passed++;Console.WriteLine("PASS "+name);}
+var doc=HelpContent.Blocks;
+string visible=string.Concat(doc.SelectMany(b=>b.Runs).Select(r=>r.Text));
+Check(doc.Count(b=>b.Heading>0)==5,"replacement help has the document's five headings");
+Check(doc.Where(b=>b.Heading>0).All(b=>b.Runs.All(r=>r.Bold)),"headings use explicit native bold styles");
+Check(!new[]{"**","####","`",@"$\times$","[特殊指令]"}.Any(visible.Contains),"format markers never appear in visible document text");
+Check(visible.Contains("×")&&visible.Contains("Stardew Copilot"),"title, supplied copy and close symbol survive formatting");
+var anchors=doc.Where(b=>b.Anchor!=null).Select(b=>"#"+b.Anchor).ToHashSet();
+Check(doc.SelectMany(b=>b.Runs).Where(r=>r.Target!=null).All(r=>anchors.Contains(r.Target!)),"all supplied section references resolve, including nonstandard heading links");
+Check(doc.SelectMany(b=>b.Runs).Any(r=>r.Code&&r.Text.Contains("/resetkey")),"commands use native inline-code styles");
+var rich=HelpDocument.Parse("Text **bold** [Wiki](https://stardewvalleywiki.com/Fish)\n```csharp\nvar x = 1;\n```\n[unsafe](file:///etc/passwd)");
+Check(rich[0].Runs.Any(r=>r.Bold&&r.Text=="bold"),"paragraphs support mixed bold and regular runs");
+Check(rich[0].Runs.Any(r=>r.Target=="https://stardewvalleywiki.com/Fish"),"public hyperlinks preserve clickable targets");
+Check(rich.Any(b=>b.Code&&b.Runs.Single().Text=="var x = 1;"),"fenced code preserves literal contents without fence markers or language labels");
+Check(rich.Last().Runs.Single().Target==null&&rich.Last().Runs.Single().Text=="unsafe","file links are inert readable labels");
+Check(!HelpDocument.Parse("`unfinished")[0].Runs[0].Text.Contains('`'),"unfinished command formatting does not leak delimiters");
+Check(HelpDocument.Parse("`a|b`")[0].Runs[0].Text=="a|b","inline code retains literal operators");
+Console.WriteLine($"All {passed} help-format checks passed.");

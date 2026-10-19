@@ -2,7 +2,7 @@
 
 适用于 macOS 的《星露谷物语》SMAPI 助手：在游戏内与 DeepSeek 对话，结合当前存档状态、Wiki 资料和游戏截图获取建议。
 
-当前版本 **0.21.0**，适配 **Stardew Valley 1.6.15 / SMAPI 4.5.2**。本仓库提供实现源码、构建脚本和合成数据测试，不包含游戏程序集、API Key、个人配置、存档、对话或截图。
+当前版本 **1.0.0**，作者 **Jyikove**，适配 **Stardew Valley 1.6.15 / SMAPI 4.5.2**。本仓库提供实现源码、构建脚本和合成数据测试，不包含游戏程序集、API Key、个人配置、存档、对话或截图。
 
 ## 功能
 
@@ -19,6 +19,12 @@
 - API Key 在游戏内配置，加密保存在 Mod 自己的目录，不需要额外的 Codex CLI 或系统钥匙串配置。
 
 当前支持 macOS 单人及网络联机（房主、农场工），暂不支持同机分屏。已占用 Enter 的输入框、确认操作、读档/结算和场景切换优先保留原操作。联机不强制暂停世界。
+
+## 下载版安装（无需编译）
+
+请从 GitHub Releases 下载 `StardewCopilot-1.0.0-macOS.zip`。解压后将整个 `StardewCopilot` 文件夹放入游戏的 `Mods` 文件夹，使用 SMAPI 启动游戏即可。详见包内 `INSTALL.txt`。
+
+仅支持 macOS，需 Stardew Valley 1.6.15 和 SMAPI 4.5.2。发布包附带 Mod 所需的额外托管依赖；游戏与 SMAPI 自带的运行库无需重复安装。不需要 Xcode、.NET SDK 或 Codex CLI。首次进入存档后在助手窗口输入自己的 DeepSeek API Key，需要网络与可用的 DeepSeek 账户额度。
 
 ## 构建与安装
 

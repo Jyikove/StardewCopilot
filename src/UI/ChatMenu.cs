@@ -42,6 +42,10 @@ internal sealed class ChatMenu : IClickableMenu, IDisposable
     private readonly List<HelpLine> helpLines = new();
     private Rectangle helpArea;
     private int helpWidth, helpHeight, helpScroll;
+    private readonly List<(Rectangle Bounds,string Url)> helpHits=new();
+    private readonly Dictionary<string,int> helpAnchors=new();
+    private string? helpLinkNotice;
+    internal Action<string> OpenHelpLink { get; set; } = url => System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(url){UseShellExecute=true});
     private int firstEditorRow;
     private float? preferredEditorX;
     private EditorDocument? editorDocument;
@@ -205,7 +209,22 @@ internal sealed class ChatMenu : IClickableMenu, IDisposable
                 selectedTab = i; composition = ""; firstEditorRow = 0; preferredEditorX = null;
                 RefreshEditorLayout(); return;
             }
-        if (selectedTab == 2) return;
+        if (selectedTab == 2)
+        {
+            if(!helpArea.Contains(x,y))return;
+            var hit=helpHits.FirstOrDefault(h=>h.Bounds.Contains(x,y));
+            if(hit.Url==null)return;
+            if(hit.Url.StartsWith('#'))
+            {
+                if(helpAnchors.TryGetValue(hit.Url[1..],out int top))helpScroll=Math.Clamp(top,0,Math.Max(0,helpHeight-helpArea.Height));
+            }
+            else if(PublicWebUrl.TryNormalize(hit.Url,out string url))
+            {
+                try { helpLinkNotice=null;OpenHelpLink(url); }
+                catch { helpLinkNotice="无法打开链接，请检查默认浏览器。"; }
+            }
+            return;
+        }
         if (selectedTab == 1 && !CompositionGuard)
         {
             RebuildTodos();
@@ -337,47 +356,98 @@ internal sealed class ChatMenu : IClickableMenu, IDisposable
         helpArea = new(history.X + 2, panel.Y + 108, Math.Max(1, history.Width - 12), Math.Max(1, footer.Y - panel.Y - 122));
         if (helpWidth != helpArea.Width)
         {
-            helpLines.Clear(); helpHeight = 0;
-            foreach (var section in HelpContent.Sections)
+            helpLines.Clear();helpAnchors.Clear();helpHeight=0;
+            foreach(var block in HelpContent.Blocks)
             {
-                float headingScale = helpLines.Count == 0 ? 1.02f : .92f;
-                foreach (string line in Wrap(section.Heading, helpArea.Width, headingScale, true))
-                    AddLine(line, headingScale, true);
-                helpHeight += 7;
-                foreach (string paragraph in section.Body.Split('\n'))
+                float scale=block.Heading==1?1.02f:block.Heading>0?.92f:.84f;
+                if(block.Anchor!=null)helpAnchors[block.Anchor]=helpHeight;
+                var runs=new List<HelpRun>();float width=0;
+                int height=(int)Math.Ceiling(font.Measure("中文Ag",scale,block.Heading>0).Y)+(block.Runs.Any(r=>r.Code)?11:7);
+                void Line()
                 {
-                    foreach (string line in Wrap(paragraph, helpArea.Width, .84f)) AddLine(line, .84f, false);
-                    helpHeight += 5;
+                    helpLines.Add(new(runs,helpHeight,height,scale,block.Heading>0,block.Code));
+                    helpHeight+=height;runs=new();width=0;
                 }
-                helpHeight += 17;
+                foreach(var run in block.Runs)
+                {
+                    var units=new List<string>();
+                    bool Word(string t)=>t.All(c=>(c>='A'&&c<='Z')||(c>='a'&&c<='z')||(c>='0'&&c<='9')||"_/+-.".Contains(c));
+                    var elements=StringInfo.GetTextElementEnumerator(run.Text);
+                    while(elements.MoveNext())
+                    {
+                        string t=elements.GetTextElement();
+                        if(units.Count>0&&Word(t)&&Word(units[^1]))units[^1]+=t;else units.Add(t);
+                    }
+                    var fitted=new List<string>();
+                    foreach(string unit in units)
+                    {
+                        if(font.Measure(unit,scale,run.Bold,run.Code).X<=helpArea.Width-20)fitted.Add(unit);
+                        else {var split=StringInfo.GetTextElementEnumerator(unit);while(split.MoveNext())fitted.Add(split.GetTextElement());}
+                    }
+                    foreach(string value in fitted)
+                    {
+                        float w=font.Measure(value,scale,run.Bold,run.Code).X;
+                        float padding=run.Code&&!block.Code&&(runs.Count==0||!runs[^1].Code)?12:0;
+                        if(width>0&&width+w+padding>helpArea.Width-20&&!"，。！？；：、）》】”’,.!?;:)".Contains(value))Line();
+                        padding=run.Code&&!block.Code&&(runs.Count==0||!runs[^1].Code)?12:0;
+                        if(runs.Count>0&&runs[^1].Bold==run.Bold&&runs[^1].Code==run.Code&&runs[^1].Target==run.Target&&(!run.Code||runs[^1].Text.All(c=>c<128)==value.All(c=>c<128)))
+                            runs[^1]=runs[^1] with{Text=runs[^1].Text+value};
+                        else runs.Add(run with{Text=value});
+                        width+=w+padding;
+                    }
+                }
+                Line();helpHeight+=block.Heading>0?12:block.Code?0:9;
             }
-            helpWidth = helpArea.Width;
+            helpWidth=helpArea.Width;
         }
-        helpScroll = Math.Clamp(helpScroll, 0, Math.Max(0, helpHeight - helpArea.Height));
-        void AddLine(string text, float scale, bool bold)
-        {
-            int lineHeight = (int)Math.Ceiling(font.Measure("中文Ag", scale, bold).Y) + 5;
-            helpLines.Add(new(text, helpHeight, lineHeight, scale, bold));
-            helpHeight += lineHeight;
-        }
+        helpScroll=Math.Clamp(helpScroll,0,Math.Max(0,helpHeight-helpArea.Height));
     }
     private void DrawHelp(SpriteBatch b)
     {
-        RebuildHelp();
-        foreach (var line in helpLines)
+        RebuildHelp();helpHits.Clear();
+        foreach(var line in helpLines)
         {
-            int y = helpArea.Y + line.Top - helpScroll;
-            if (y < helpArea.Top || y + line.Height > helpArea.Bottom) continue;
-            Text(b, line.Text, helpArea.X, y, Ink, line.Scale, line.Bold);
+            int y=helpArea.Y+line.Top-helpScroll;
+            if(y<helpArea.Top||y+line.Height>helpArea.Bottom)continue;
+            float x=helpArea.X+6;
+            if(line.Code)Card(b,new(helpArea.X,y-2,helpArea.Width,line.Height+2),new Color(235,229,215),new Color(235,229,215),helpArea);
+            for(int i=0;i<line.Runs.Count;i++)
+            {
+                var run=line.Runs[i];
+                float w=font.Measure(run.Text,line.Scale,run.Bold,run.Code).X;
+                if(run.Code&&!line.Code&&(i==0||!line.Runs[i-1].Code))
+                {
+                    float groupWidth=0;
+                    for(int j=i;j<line.Runs.Count&&line.Runs[j].Code;j++)
+                        groupWidth+=font.Measure(line.Runs[j].Text,line.Scale,line.Runs[j].Bold,true).X;
+                    var shade=new Color(235,229,215);
+                    Card(b,new((int)x,y-2,(int)Math.Ceiling(groupWidth)+12,line.Height+1),shade,shade,helpArea);
+                    x+=6;
+                }
+                font.Draw(b,run.Text,x,y,run.Target!=null?CitationBlue:Ink,line.Scale,run.Bold,run.Code);
+                if(run.Target!=null)
+                {
+                    var rect=new Rectangle((int)x,y,Math.Max(1,(int)Math.Ceiling(w)),line.Height);
+                    helpHits.Add((rect,run.Target));
+                }
+                x+=w;
+                if(run.Code&&!line.Code&&(i==line.Runs.Count-1||!line.Runs[i+1].Code))x+=6;
+            }
         }
-        if (helpHeight > helpArea.Height)
+        if(helpLinkNotice!=null)
         {
-            int thumb = Math.Min(helpArea.Height, Math.Max(22, helpArea.Height * helpArea.Height / helpHeight));
-            int y = helpArea.Y + (helpArea.Height - thumb) * helpScroll / (helpHeight - helpArea.Height);
-            Fill(b, new(helpArea.Right + 6, y, 3, thumb), Accent * .4f);
+            int y=helpArea.Bottom-24;Fill(b,new(helpArea.X,y,helpArea.Width,24),Paper);
+            Text(b,Fit(helpLinkNotice,helpArea.Width,.72f),helpArea.X,y,Muted,.72f);
+        }
+        if(helpHeight>helpArea.Height)
+        {
+            int thumb=Math.Min(helpArea.Height,Math.Max(22,helpArea.Height*helpArea.Height/helpHeight));
+            int y=helpArea.Y+(helpArea.Height-thumb)*helpScroll/(helpHeight-helpArea.Height);
+            Fill(b,new(helpArea.Right+6,y,3,thumb),Accent*.4f);
         }
     }
-    private sealed record HelpLine(string Text, int Top, int Height, float Scale, bool Bold);
+    private sealed record HelpLine(List<HelpRun> Runs,int Top,int Height,float Scale,bool Bold,bool Code)
+    { public string Text=>string.Concat(Runs.Select(r=>r.Text)); }
 
     private void DrawMessages(SpriteBatch b)
     {
@@ -450,12 +520,12 @@ internal sealed class ChatMenu : IClickableMenu, IDisposable
 
     private void DrawCitationTooltip(SpriteBatch b)
     {
-        if(selectedTab!=0)return;
+        if(selectedTab is not (0 or 2))return;
         int mx=Game1.getMouseX(true),my=Game1.getMouseY(true);
-        var hit=citationHits.FirstOrDefault(h=>h.Bounds.Contains(mx,my));
+        var hit=(selectedTab==2?helpHits:citationHits).FirstOrDefault(h=>h.Bounds.Contains(mx,my));
         if(hit.Url==null)return;
         int maxWidth=Math.Max(1,Math.Min(600,Game1.uiViewport.Width-28));
-        var lines=Wrap(hit.Url,Math.Max(1,maxWidth-20),.72f);
+        var lines=Wrap(hit.Url.StartsWith('#')?"跳转到："+hit.Url[1..]:hit.Url,Math.Max(1,maxWidth-20),.72f);
         int w=Math.Min(maxWidth,Math.Max(30,(int)lines.Max(line=>font.Measure(line,.72f).X)+20));
         int lineHeight=(int)Math.Ceiling(font.Measure("Ag",.72f).Y)+3;
         int maxLines=Math.Max(1,(Game1.uiViewport.Height-32)/lineHeight);

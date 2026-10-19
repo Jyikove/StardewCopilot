@@ -7,6 +7,8 @@
   </PropertyGroup>
   <ItemGroup>
     <Compile Remove="keychain/**/*.cs" />
+    <Compile Remove="mods/**/*.cs" />
+    <Compile Remove="help/**/*.cs" />
     <Compile Remove="multiplayer/**/*.cs" />
     <Compile Remove="knowledge/**/*.cs" />
     <Compile Remove="menu/**/*.cs" />
