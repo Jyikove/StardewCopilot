@@ -7,5 +7,6 @@
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="../../src/Core/ModEnvironment.cs" Link="Core/ModEnvironment.cs" />
+    <Compile Include="../../src/Core/PublicWebUrl.cs" Link="Core/PublicWebUrl.cs" />
   </ItemGroup>
 </Project>
