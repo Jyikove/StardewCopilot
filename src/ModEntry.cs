@@ -20,6 +20,7 @@ public sealed class ModEntry : Mod
     private string? todoSaveKey;
     private Core.MainThreadQueries queries = null!;
     private Core.ConversationStore conversations = null!;
+    private Core.ModEnvironment modEnvironment = null!;
     private readonly HudChatButton hudButton = new();
     private readonly MenuLayer menuLayer = new();
     private readonly PendingMenuOpen pendingOpen = new();
@@ -46,7 +47,9 @@ public sealed class ModEntry : Mod
             message=>Monitor.Log(message,LogLevel.Trace), options:config.Knowledge);
         var retrieval = new Knowledge.KnowledgeRouter(knowledge,broad,config.Knowledge?.EnableBroadWeb??true);
         _ = knowledge.InitializeAsync();
-        session = new ChatSession(new Core.DeepSeekClient(secrets, knowledge: retrieval.RetrieveAsync, diagnostic:message=>Monitor.Log(message,LogLevel.Trace), cachedKnowledge:retrieval.TryCacheAsync, freshKnowledge:retrieval.RetrieveFreshAsync, uncachedKnowledge:retrieval.RetrieveUncachedAsync, terminology:terminology), queries, conversations, () => todos, screenCapture, new Vision.ScreenImageProcessor());
+        modEnvironment = new Core.ModEnvironment(retrieval.RetrieveAsync, message => Monitor.Log(message, LogLevel.Trace));
+        RefreshModInventory();
+        session = new ChatSession(new Core.DeepSeekClient(secrets, knowledge: retrieval.RetrieveAsync, diagnostic:message=>Monitor.Log(message,LogLevel.Trace), cachedKnowledge:retrieval.TryCacheAsync, freshKnowledge:retrieval.RetrieveFreshAsync, uncachedKnowledge:retrieval.RetrieveUncachedAsync, terminology:terminology, modEnvironment:modEnvironment), queries, conversations, () => todos, screenCapture, new Vision.ScreenImageProcessor());
         session.KeyConfigurationRequested += () => requestKeyConfiguration = true;
         if (string.IsNullOrWhiteSpace(config.Model) || config.Model.StartsWith("gpt-", StringComparison.OrdinalIgnoreCase))
             config.Model = "deepseek-flash";
@@ -86,6 +89,29 @@ public sealed class ModEntry : Mod
                 catch { Monitor.Log($"{query.Item1}: unavailable", LogLevel.Warn); }
             }
         });
+    }
+
+    private void RefreshModInventory()
+    {
+        try
+        {
+            var snapshot = Helper.ModRegistry.GetAll().Select(mod => new Core.ModDescriptor(
+                mod.Manifest.UniqueID,
+                mod.Manifest.Name,
+                mod.Manifest.Version.ToString(),
+                Helper.ModRegistry.IsLoaded(mod.Manifest.UniqueID),
+                mod.DirectoryPath,
+                mod.Manifest.Author ?? "",
+                mod.Manifest.Description ?? "",
+                mod.Manifest.EntryDll ?? "")).ToArray();
+            modEnvironment.ReplaceMods(snapshot);
+            Monitor.Log($"Captured {snapshot.Length} loaded Mod manifests for on-demand assistant tools.", LogLevel.Trace);
+        }
+        catch (Exception error)
+        {
+            modEnvironment.ReplaceMods(Array.Empty<Core.ModDescriptor>());
+            Monitor.Log($"Could not capture Mod inventory: {error.GetType().Name}", LogLevel.Warn);
+        }
     }
 
     private string ReadAssistantTool(string name, string arguments)

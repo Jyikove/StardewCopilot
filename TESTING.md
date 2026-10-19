@@ -10,6 +10,7 @@
 dotnet run --project tests/SmokeTests.csproj
 dotnet run --project tests/screen/ScreenTests.csproj
 dotnet run --project tests/terminology/TerminologyTests.csproj
+dotnet run --project tests/mods/ModTests.csproj
 ```
 
 覆盖消息和摘要、流式接收、取消/超时、按存档保存、凭据加密、指令、待办权限，以及截图工具协议、上下文、即时状态、裁剪/重截预算和来源标记。
@@ -19,6 +20,8 @@ dotnet run --project tests/terminology/TerminologyTests.csproj
 查询预算回归包含：恰好 8 次、单批超过额度、多轮批次超过剩余额度，在流式与非流式下都应禁用工具并产生最终回答；验证跳过的待办/检索不会执行、全部工具 ID 均有结果、原有来源规则不变，以及最终问答能够显示并按存档保存。另验证超出独立响应解析边界的畸形批次仍被拒绝。
 
 人格回归还检查各入口只注入一次共享规则、提示词估算增幅不超过第一阶段基线的 15%、闲聊/疲惫/单纯出门不强制检索但保留即时状态、事实问题原有核实流程、规划保留完整任务和作物数据、摘要与人格分离。模拟回复只证明协议和文本传递正确，不能证明模型实际语气或优先级判断；真实游戏中的十二类验收见 [人格验收](docs/PERSONA-ACCEPTANCE.md)。
+
+`tests/mods` 使用临时目录和合成 Mod 清单验证 Mod 库存注入数据、按 ID 查找、字段白名单、嵌套敏感字段过滤、任意路径拒绝、配置值的运行时状态标记，以及 Mod 文档检索的来源相关性过滤。测试不会读取真实 Mods 目录、真实配置或 API Key，也不调用外部网络。
 
 ## 使用游戏依赖的本地检查
 
